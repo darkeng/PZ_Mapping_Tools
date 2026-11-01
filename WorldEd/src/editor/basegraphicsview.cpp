@@ -157,6 +157,10 @@ BaseGraphicsView::BaseGraphicsView(AllowOpenGL openGL, QWidget *parent)
     mRenderDiagnosticsLabel->setVisible(mRenderDiagnosticsEnabled);
     mRenderDiagnosticsLabel->raise();
     mDiagnosticsMemoryTimer.start();
+    mRenderDiagnosticsLabelTimer.setSingleShot(true);
+    mRenderDiagnosticsLabelTimer.setInterval(250);
+    connect(&mRenderDiagnosticsLabelTimer, &QTimer::timeout,
+            this, &BaseGraphicsView::updateRenderDiagnosticsLabel);
 #ifndef QT_NO_OPENGL
     if (openGL == PreferenceGL) {
         Preferences *prefs = Preferences::instance();
@@ -341,7 +345,8 @@ void BaseGraphicsView::paintEvent(QPaintEvent *event)
                 PortableSettings::currentProcessMemoryBytes();
         mDiagnosticsMemoryTimer.restart();
     }
-    updateRenderDiagnosticsLabel();
+    if (!mRenderDiagnosticsLabelTimer.isActive())
+        mRenderDiagnosticsLabelTimer.start();
 }
 QString BaseGraphicsView::renderDiagnosticsWorkloadText(
         quint64 renderedTiles) const

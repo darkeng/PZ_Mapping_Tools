@@ -1654,6 +1654,10 @@ BuildingIsoView::BuildingIsoView(QWidget *parent) :
     mRenderDiagnosticsLabel->setVisible(mRenderDiagnosticsEnabled);
     mRenderDiagnosticsLabel->raise();
     mDiagnosticsMemoryTimer.start();
+    mRenderDiagnosticsLabelTimer.setSingleShot(true);
+    mRenderDiagnosticsLabelTimer.setInterval(250);
+    connect(&mRenderDiagnosticsLabelTimer, &QTimer::timeout,
+            this, &BuildingIsoView::updateRenderDiagnosticsLabel);
     // Install an event filter so that we can get key events on behalf of the
     // active tool without having to have the current focus.
     qApp->installEventFilter(this);
@@ -1749,7 +1753,8 @@ void BuildingIsoView::paintEvent(QPaintEvent *event)
                 PortableSettings::currentProcessMemoryBytes();
         mDiagnosticsMemoryTimer.restart();
     }
-    updateRenderDiagnosticsLabel();
+    if (!mRenderDiagnosticsLabelTimer.isActive())
+        mRenderDiagnosticsLabelTimer.start();
 }
 void BuildingIsoView::resizeEvent(QResizeEvent *event)
 {

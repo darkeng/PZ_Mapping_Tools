@@ -163,6 +163,7 @@ protected:
     QLabel *mRenderDiagnosticsLabel;
     QElapsedTimer mDiagnosticsPreviousFrame;
     QElapsedTimer mDiagnosticsMemoryTimer;
+    QTimer mRenderDiagnosticsLabelTimer;
     qreal mDiagnosticsFps;
     qreal mDiagnosticsFrameMs;
     quint64 mDiagnosticsRenderedTiles;

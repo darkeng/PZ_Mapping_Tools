@@ -23,6 +23,7 @@
 
 #include <QGraphicsView>
 #include <QElapsedTimer>
+#include <QTimer>
 
 #ifdef ZOMBOID
 #include "minimap.h"
@@ -112,6 +113,7 @@ private:
     QLabel *mRenderDiagnosticsLabel;
     QElapsedTimer mDiagnosticsPreviousFrame;
     QElapsedTimer mDiagnosticsMemoryTimer;
+    QTimer mRenderDiagnosticsLabelTimer;
     qreal mDiagnosticsFps;
     qreal mDiagnosticsRenderMs;
     quint64 mDiagnosticsRenderedTiles;

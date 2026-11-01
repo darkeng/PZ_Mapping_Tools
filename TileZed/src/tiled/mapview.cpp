@@ -122,6 +122,10 @@ MapView::MapView(QWidget *parent)
     mRenderDiagnosticsLabel->setVisible(mRenderDiagnosticsEnabled);
     mRenderDiagnosticsLabel->raise();
     mDiagnosticsMemoryTimer.start();
+    mRenderDiagnosticsLabelTimer.setSingleShot(true);
+    mRenderDiagnosticsLabelTimer.setInterval(250);
+    connect(&mRenderDiagnosticsLabelTimer, &QTimer::timeout,
+            this, &MapView::updateRenderDiagnosticsLabel);
 #endif
 }
 
@@ -422,7 +426,8 @@ void MapView::paintEvent(QPaintEvent *event)
                 PortableSettings::currentProcessMemoryBytes();
         mDiagnosticsMemoryTimer.restart();
     }
-    updateRenderDiagnosticsLabel();
+    if (!mRenderDiagnosticsLabelTimer.isActive())
+        mRenderDiagnosticsLabelTimer.start();
 }
 
 void MapView::resizeEvent(QResizeEvent *event)

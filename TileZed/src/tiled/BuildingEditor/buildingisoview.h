@@ -26,6 +26,7 @@
 #include <QGraphicsScene>
 #include <QGraphicsView>
 #include <QElapsedTimer>
+#include <QTimer>
 
 #include <QMap>
 #include <QSet>
@@ -393,6 +394,7 @@ private:
     QLabel *mRenderDiagnosticsLabel;
     QElapsedTimer mDiagnosticsPreviousFrame;
     QElapsedTimer mDiagnosticsMemoryTimer;
+    QTimer mRenderDiagnosticsLabelTimer;
     qreal mDiagnosticsFps;
     qreal mDiagnosticsFrameMs;
     quint64 mDiagnosticsRenderedTiles;
