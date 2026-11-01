@@ -39,9 +39,15 @@ TMX maps and tile layers are limited to 300 x 300 tiles, including Native256
 workflows that reuse legacy-size maps or building layouts. TileZed asks for
 confirmation before a map resize crops existing content.
 
-Raster drawing reuses filtered tiles at supported 25% and 50% zooms.
+Raster drawing reuses filtered tiles at supported 25%, 50% and 75% zooms.
+TileZed and BuildingEd split large raster redraws, such as zoomed-out views,
+into horizontal bands drawn on all processor threads, producing the same
+pixels as a single-threaded redraw.
 WorldEd draws cell tiles using the active drawing surface rather than the saved
 OpenGL preference, retaining visible tiles when switching rendering backends.
+Its OpenGL renderer packs tilesheets into shared texture pages and draws each
+visible level of the cell and its adjacent cells in a few batched calls, in the
+same order and with the same layer, lot and room visibility rules.
 OpenGL tile blending preserves alpha correctly to avoid bright fringes on
 semi-transparent tile edges.
 All three applications start at a centered 1920 x 1080 window size, reduced
@@ -54,9 +60,12 @@ when needed and keeps its confirmation buttons visible.
 WorldEd's lower view controls wrap onto additional rows on narrow windows.
 The Street Names, Regions and InGameMap panels scroll when space is limited.
 Tilesheet loading decodes and prepares images in parallel using up to eight
-workers, adjusted to the available processor threads. All discovered sheets
-and declared map tilesets remain ready before rendering. Shared image caches
-and editor updates are applied on the application thread.
+workers, adjusted to the available processor threads. Every requested sheet is
+queued at once, so decoding continues while the catalogue is being prepared.
+Sheets stored in Tiles subfolders are located through a cached index of the
+Tiles directory that is refreshed when its folders change. All discovered
+sheets and declared map tilesets remain ready before rendering. Shared image
+caches and editor updates are applied on the application thread.
 WorldEd retains object geometry during camera zoom and avoids rebuilding
 unchanged search results. BuildingEd reuses room highlight regions, and
 TileZed and BuildingEd avoid rewriting unchanged window settings.
@@ -268,7 +277,9 @@ Important additions include:
 - Partial Chunks lassos and the optional room-under-pointer highlight redraw
   only the scene regions whose visual state changed. Render diagnostics are
   disabled by default, and rendered-tile counting remains inactive until the
-  diagnostics are explicitly enabled.
+  diagnostics are explicitly enabled. When enabled, the diagnostics overlay
+  refreshes at most four times per second, so updating it does not keep the
+  view repainting continuously.
 - Raster rendering does not retain a CPU atlas for every tilesheet. OpenGL
   atlases are assembled only for sheets that are actually uploaded, then the
   temporary CPU atlas is released after upload.
