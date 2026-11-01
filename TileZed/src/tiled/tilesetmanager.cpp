@@ -278,33 +278,7 @@ bool TilesetManager::getTilesetFileName(const QString &tilesetName, QString &pat
     if (QImageReader(path2x).size().isValid()) {
         return true;
     }
-    auto findImage = [&fileName](const QDir &root,
-                                 const QString &excludedTree = QString()) {
-        QStringList candidates;
-        const QString excludedPrefix = excludedTree.isEmpty()
-                ? QString()
-                : QDir::cleanPath(QFileInfo(excludedTree).absoluteFilePath())
-                  + QDir::separator();
-        QDirIterator iterator(root.absolutePath(),
-                              QStringList() << fileName,
-                              QDir::Files,
-                              QDirIterator::Subdirectories);
-        while (iterator.hasNext()) {
-            const QString candidate =
-                    QDir::cleanPath(QFileInfo(iterator.next())
-                                    .absoluteFilePath());
-            if (!excludedPrefix.isEmpty()
-                    && candidate.startsWith(
-                        excludedPrefix, Qt::CaseInsensitive)) {
-                continue;
-            }
-            if (QImageReader(candidate).size().isValid())
-                candidates += candidate;
-        }
-        candidates.sort(Qt::CaseInsensitive);
-        return candidates.isEmpty() ? QString() : candidates.first();
-    };
-    const QString nested2x = findImage(dir2x);
+    const QString nested2x = mTilesetFileIndex.findImage(dir2x, fileName);
     if (!nested2x.isEmpty()) {
         const QString relative = dir2x.relativeFilePath(nested2x);
         path1x = dir1x.filePath(relative);
@@ -317,7 +291,7 @@ bool TilesetManager::getTilesetFileName(const QString &tilesetName, QString &pat
     }
 
     const QString nested1x =
-            findImage(dir1x, dir2x.absolutePath());
+            mTilesetFileIndex.findImage(dir1x, fileName, dir2x.absolutePath());
     if (!nested1x.isEmpty()) {
         const QString relative = dir1x.relativeFilePath(nested1x);
         path1x = nested1x;
@@ -355,6 +329,7 @@ void TilesetManager::fileChangedTimeout()
     mImageLoader->waitForDone();
     if (!mChangedDirectories.isEmpty()) {
         qInfo() << "Tiles directory changed:" << mChangedDirectories;
+        mTilesetFileIndex.invalidate();
         if (!TileMetaInfoMgr::instance()->addNewTilesets()) {
             qWarning().noquote()
                     << "Unable to discover new tilesets:"

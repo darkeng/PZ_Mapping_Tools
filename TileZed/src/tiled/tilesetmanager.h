@@ -23,6 +23,8 @@
 #define TILESETMANAGER_H
 
 #ifdef ZOMBOID
+#include "tilesetfileindex.h"
+
 #include <QFileInfo>
 #endif
 #include <QObject>
@@ -210,6 +212,7 @@ private:
 #ifdef ZOMBOID
     TilesetImageCache *mTilesetImageCache;
     TilesetImageLoader *mImageLoader;
+    PZTools::TilesetFileIndex mTilesetFileIndex;
     QSet<Tileset *> mPendingImages;
     void queueImage(Tileset *tileset);
 

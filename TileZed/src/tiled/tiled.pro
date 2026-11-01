@@ -41,6 +41,7 @@ HEADERS += BuildingEditor/basementexportvalidation.h BuildingEditor/buildingstai
 HEADERS += ../../../shared/pztoolspaths.h
 HEADERS += ../../../shared/windowtrimvalidation.h
 HEADERS += ../../../shared/tilesetimageloader.h
+HEADERS += ../../../shared/tilesetfileindex.h
 HEADERS += ../../../shared/loadingdialog.h
 HEADERS += ../../../shared/startupwindowgeometry.h
 HEADERS += ../../../shared/displayscaling.h
