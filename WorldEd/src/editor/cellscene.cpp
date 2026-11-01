@@ -578,7 +578,10 @@ TilesetTexturesPerContext::~TilesetTexturesPerContext()
 {
     if (mContext != nullptr) {
         QOpenGLContext *context = mContext->shareContext() ? mContext->shareContext() : mContext;
-        if (context->makeCurrent(context->surface())) {
+        QSurface *surface = context->surface();
+        if (surface != nullptr && context->makeCurrent(surface)
+                && QOpenGLContext::currentContext() == context) {
+            QOpenGLFunctions *functions = context->functions();
             for (TilesetTexture *texture : std::as_const(mTextures)) {
 #if TILESET_TEXTURE_GL
                 texture->mTexture->destroy();
@@ -586,7 +589,7 @@ TilesetTexturesPerContext::~TilesetTexturesPerContext()
 #else
                 if (texture->mID != -1) {
                     GLuint id = texture->mID;
-                    mContext->functions()->glDeleteTextures(1, &id);
+                    functions->glDeleteTextures(1, &id);
                 }
 #endif
             }
