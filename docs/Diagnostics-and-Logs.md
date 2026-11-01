@@ -26,8 +26,9 @@ and process bitness.
 
 No username, hostname, serial number, IP address, or stable hardware identifier
 is collected. Remote desktop sessions can expose only the remote display
-adapter. When WorldEd creates an OpenGL context, it also records the actual
-OpenGL vendor, renderer, and version selected by the driver.
+adapter. When WorldEd, TileZed, or BuildingEd creates an OpenGL context, it
+also records the actual OpenGL vendor, renderer, and version selected by the
+driver.
 
 ## Reading a log line
 

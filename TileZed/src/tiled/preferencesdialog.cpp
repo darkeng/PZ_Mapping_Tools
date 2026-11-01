@@ -25,6 +25,7 @@
 #include "languagemanager.h"
 #include "mainwindow.h"
 #include "objecttypesmodel.h"
+#include "opengltilerenderer.h"
 #include "preferences.h"
 #include "utils.h"
 #include "../firstlaunchdialog.h"
@@ -134,9 +135,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) :
     });
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
-    mUi->openGL->setEnabled(false);
-    mUi->openGL->setVisible(false);
-    mUi->openGLWarning->setVisible(false);
+    mUi->openGL->setEnabled(OpenGLTileRenderer::isAvailable());
 
     foreach (const QString &name, mLanguages) {
         QLocale locale(name);

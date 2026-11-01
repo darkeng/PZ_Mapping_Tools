@@ -43,6 +43,11 @@ Raster drawing reuses filtered tiles at supported 25%, 50% and 75% zooms.
 TileZed and BuildingEd split large raster redraws, such as zoomed-out views,
 into horizontal bands drawn on all processor threads, producing the same
 pixels as a single-threaded redraw.
+When OpenGL 3.3 is available, TileZed and BuildingEd draw map tiles on the
+graphics card. Tile images are packed into texture pages shared by the views of
+a window, each visible level is drawn in a few batched calls, and the visible
+tile rows are gathered on all processor threads in the same order and with the
+same visibility rules as the raster renderer.
 WorldEd draws cell tiles using the active drawing surface rather than the saved
 OpenGL preference, retaining visible tiles when switching rendering backends.
 Its OpenGL renderer packs tilesheets into shared texture pages and draws each
@@ -380,9 +385,10 @@ Important additions include:
   Size** `[` binding restore it automatically.
 - The Maps browser sorts directories and files by Name, numeric Size, or
   actual Last modified time when its column headers are clicked.
-- The Qt raster viewport is used consistently. The experimental OpenGL
-  viewport is disabled to avoid driver-dependent Brush Tool slowdowns. Render
-  diagnostics are disabled by default.
+- The map view uses OpenGL when OpenGL 3.3 is available and the Qt raster
+  viewport otherwise. Clearing **Use hardware-accelerated rendering (OpenGL)**
+  in Preferences selects the raster viewport; starting with `--disable-opengl`
+  clears that setting. Render diagnostics are disabled by default.
 
 ### BuildingEd
 
@@ -411,8 +417,10 @@ Important additions include:
 - Tile previews redraw only their affected isometric area. Extended margins
   are applied only to Jumbo, Jumbo XL, and Jumbo XXL tiles, and preview tile
   lookup no longer rebuilds the complete tileset catalogue on each move.
-- The Qt raster viewport uses minimal dirty-region updates. The experimental
-  OpenGL viewport is disabled, and render diagnostics are off by default.
+- The isometric views use OpenGL when OpenGL 3.3 is available. Otherwise, or
+  when hardware-accelerated rendering is cleared in Preferences, the Qt raster
+  viewport uses minimal dirty-region updates. Render diagnostics are off by
+  default.
 - Structural edits regenerate automatic building layers only for the visible
   Object, Tile, or Attribute mode. Hidden isometric views synchronize when
   their mode is opened instead of repeating the same floor-wide work after

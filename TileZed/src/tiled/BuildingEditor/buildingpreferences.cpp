@@ -34,7 +34,7 @@ static const char *KEY_SHOW_LOWER_FLOORS = "PreviewWindow/ShowLowerFloors";
 static const char *KEY_SHOW_ONLY_FLOORS = "PreviewWindow/ShowOnlyFloors";
 static const char *KEY_SHOW_OBJECTS = "PreviewWindow/ShowObjects";
 static const char *KEY_HIGHLIGHT_UNLIT_ROOMS = "HighlightUnlitRooms";
-static const char *KEY_OPENGL = "OpenGL";
+static const char *KEY_OPENGL = "OpenGLRenderer";
 static const char *KEY_LEVEL_ISO = "LevelIsomettric";
 static const char *KEY_AUTOSAVE_INTERVAL = "AutoSaveIntervalMinutes";
 
@@ -79,8 +79,7 @@ BuildingPreferences::BuildingPreferences(QObject *parent) :
                                  false).toBool();
     mTileScale = mSettings.value(QLatin1String(KEY_TILE_SCALE),
                                  0.5).toReal();
-    mUseOpenGL = false;
-    mSettings.setValue(QLatin1String(KEY_OPENGL), false);
+    mUseOpenGL = mSettings.value(QLatin1String(KEY_OPENGL), true).toBool();
     mLevelIsometric = mSettings.value(QLatin1String(KEY_LEVEL_ISO), false).toBool();
     mAutoSaveIntervalMinutes = mSettings.value(
                 QLatin1String(KEY_AUTOSAVE_INTERVAL), 5).toInt();
@@ -200,12 +199,11 @@ void BuildingPreferences::setTileScale(qreal scale)
 
 void BuildingPreferences::setUseOpenGL(bool useOpenGL)
 {
-    Q_UNUSED(useOpenGL)
-    if (!mUseOpenGL)
+    if (useOpenGL == mUseOpenGL)
         return;
-    mUseOpenGL = false;
-    mSettings.setValue(QLatin1String(KEY_OPENGL), false);
-    emit useOpenGLChanged(false);
+    mUseOpenGL = useOpenGL;
+    mSettings.setValue(QLatin1String(KEY_OPENGL), mUseOpenGL);
+    emit useOpenGLChanged(mUseOpenGL);
 }
 
 void BuildingPreferences::setLevelIsometric(bool levels)

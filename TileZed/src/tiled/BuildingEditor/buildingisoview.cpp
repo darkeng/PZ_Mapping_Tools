@@ -41,6 +41,7 @@
 #include "isometricrenderer.h"
 #include "map.h"
 #include "maprenderer.h"
+#include "opengltilerenderer.h"
 #include "tile.h"
 #include "tilelayer.h"
 #include "tileset.h"
@@ -1900,16 +1901,23 @@ void BuildingIsoView::clearDocument()
 void BuildingIsoView::setUseOpenGL(bool useOpenGL)
 {
 #ifndef QT_NO_OPENGL
-    Q_UNUSED(useOpenGL)
-    if (qobject_cast<QOpenGLWidget*>(viewport()))
-        setViewport(0);
+    const bool openGL = useOpenGL && OpenGLTileRenderer::isAvailable();
+    if (openGL && !qobject_cast<QOpenGLWidget*>(viewport())) {
+        QOpenGLWidget *openGLWidget = new QOpenGLWidget;
+        openGLWidget->setFormat(OpenGLTileRenderer::surfaceFormat());
+        setViewport(openGLWidget);
+    } else if (!openGL && qobject_cast<QOpenGLWidget*>(viewport())) {
+        setViewport(nullptr);
+    }
 
     QWidget *v = viewport();
-    setViewportUpdateMode(QGraphicsView::MinimalViewportUpdate);
+    setViewportUpdateMode(openGL ? QGraphicsView::FullViewportUpdate
+                                 : QGraphicsView::MinimalViewportUpdate);
     v->setAttribute(Qt::WA_StaticContents);
     v->setMouseTracking(true);
     qInfo() << "BuildingEd IsoView renderer:"
-            << QStringLiteral("Qt raster viewport");
+            << (openGL ? QStringLiteral("OpenGL 3.3 compatibility")
+                       : QStringLiteral("Qt raster viewport"));
 #endif
 }
 

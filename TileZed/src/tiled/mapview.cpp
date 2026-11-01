@@ -28,6 +28,7 @@
 #include "map.h"
 #include "mapdocument.h"
 #include "maprenderer.h"
+#include "opengltilerenderer.h"
 #include "tilelayerspanel.h"
 #include "zlevelrenderer.h"
 #include "../portablesettings.h"
@@ -180,11 +181,16 @@ void MapView::adjustScale(qreal scale)
 void MapView::setUseOpenGL(bool useOpenGL)
 {
 #ifndef QT_NO_OPENGL
-    Q_UNUSED(useOpenGL)
+    const bool openGL = useOpenGL && OpenGLTileRenderer::isAvailable();
     QWidget *oldViewport = viewport();
     QWidget *newViewport = viewport();
-    if (qobject_cast<QOpenGLWidget*>(viewport()))
-        newViewport = 0;
+    if (openGL && !qobject_cast<QOpenGLWidget*>(oldViewport)) {
+        QOpenGLWidget *openGLWidget = new QOpenGLWidget;
+        openGLWidget->setFormat(OpenGLTileRenderer::surfaceFormat());
+        newViewport = openGLWidget;
+    } else if (!openGL && qobject_cast<QOpenGLWidget*>(oldViewport)) {
+        newViewport = nullptr;
+    }
 
     // Changing the viewport destroys its child widgets
     if (newViewport != oldViewport) {
@@ -201,11 +207,13 @@ void MapView::setUseOpenGL(bool useOpenGL)
     }
 
     QWidget *v = viewport();
-    setViewportUpdateMode(QGraphicsView::MinimalViewportUpdate);
+    setViewportUpdateMode(openGL ? QGraphicsView::FullViewportUpdate
+                                 : QGraphicsView::MinimalViewportUpdate);
     v->setAttribute(Qt::WA_StaticContents);
     v->setMouseTracking(true);
     qInfo() << "TileZed MapView renderer:"
-            << QStringLiteral("Qt raster viewport");
+            << (openGL ? QStringLiteral("OpenGL 3.3 compatibility")
+                       : QStringLiteral("Qt raster viewport"));
 #endif
 }
 #else

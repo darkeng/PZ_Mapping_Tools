@@ -846,16 +846,18 @@ browser.
 **How to avoid it:** create folders from the browser button or right-click menu
 instead of moving the project while it is open.
 
-### Why is a TMX blank or very slow with OpenGL enabled?
+### What if a TMX is drawn incorrectly with OpenGL?
 
-The OpenGL renderer remains an optional compatibility path. Some maps, drivers,
-and rule-reload workflows can display blank content or severe brush lag there.
+TileZed and BuildingEd draw tiles with OpenGL when the graphics driver provides
+OpenGL 3.3, and use the Raster renderer otherwise. The log records the OpenGL
+vendor, renderer, and version, or that OpenGL 3.3 is unavailable.
 
-**What to do:** disable OpenGL in Preferences and reopen the map. Use the
-Raster renderer for normal editing.
+**What to do:** clear **Use hardware-accelerated rendering (OpenGL)** in
+Preferences, or start the application with `--disable-opengl`, which clears
+that setting, and compare the map with the Raster renderer.
 
-**How to avoid it:** leave OpenGL disabled unless testing it for a specific
-renderer issue, and mention both Raster and OpenGL results in a report.
+**How to avoid it:** keep graphics drivers current, and mention both Raster and
+OpenGL results in a report.
 
 ## BuildingEd
 

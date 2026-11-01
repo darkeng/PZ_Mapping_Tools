@@ -235,18 +235,11 @@
           </item>
           <item>
            <widget class="QCheckBox" name="openGL">
-            <property name="text">
-             <string>Experimental OpenGL viewport</string>
+            <property name="toolTip">
+             <string>Draws map tiles on the graphics card when OpenGL 3.3 is available.</string>
             </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLabel" name="openGLWarning">
             <property name="text">
-             <string>Not recommended. TileZed does not yet have a native OpenGL renderer, and the Brush Tool may become much slower. Keep this disabled until the renderer port is complete.</string>
-            </property>
-            <property name="wordWrap">
-             <bool>true</bool>
+             <string>Use hardware-accelerated rendering (OpenGL)</string>
             </property>
            </widget>
           </item>

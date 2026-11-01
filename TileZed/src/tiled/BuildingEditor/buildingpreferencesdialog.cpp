@@ -20,6 +20,7 @@
 
 #include "appissuenotifier.h"
 #include "buildingpreferences.h"
+#include "opengltilerenderer.h"
 #include "preferences.h"
 #include "../../portablesettings.h"
 #include "../../sharedmainwindowgeometrywidget.h"
@@ -155,9 +156,13 @@ BuildingPreferencesDialog::BuildingPreferencesDialog(QWidget *parent) :
                     enabled, mThemeCombo->currentText());
     });
 
-    mUseOpenGL = false;
-    ui->useOpenGL->setChecked(false);
-    ui->useOpenGL->setVisible(false);
+    mUseOpenGL = prefs()->useOpenGL();
+    ui->useOpenGL->setEnabled(Tiled::OpenGLTileRenderer::isAvailable());
+    ui->useOpenGL->setChecked(mUseOpenGL && ui->useOpenGL->isEnabled());
+    ui->useOpenGL->setToolTip(tr("Draws building tiles on the graphics card when "
+                                 "OpenGL 3.3 is available."));
+    connect(ui->useOpenGL, &QAbstractButton::toggled,
+            this, &BuildingPreferencesDialog::setUseOpenGL);
 
     ui->isometric->setChecked(!prefs()->levelIsometric());
     ui->levelIsometric->setChecked(prefs()->levelIsometric());

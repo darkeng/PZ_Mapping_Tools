@@ -277,8 +277,7 @@ Preferences::Preferences()
                                         true).toBool();
     mLanguage = mSettings->value(QLatin1String("Language"),
                                  QString()).toString();
-    mUseOpenGL = false;
-    mSettings->setValue(QLatin1String("OpenGL"), false);
+    mUseOpenGL = mSettings->value(QLatin1String("OpenGLRenderer"), true).toBool();
 #ifdef ZOMBOID
     mAutoSwitchLayer = mSettings->value(QLatin1String("AutoSwitchLayer"), true).toBool();
     mTilesetScale = mSettings->value(QLatin1String("TilesetScale"), 1.0).toReal();
@@ -557,14 +556,13 @@ void Preferences::setReloadTilesetsOnChanged(bool value)
 
 void Preferences::setUseOpenGL(bool useOpenGL)
 {
-    Q_UNUSED(useOpenGL)
-    if (!mUseOpenGL)
+    if (mUseOpenGL == useOpenGL)
         return;
 
-    mUseOpenGL = false;
-    mSettings->setValue(QLatin1String("Interface/OpenGL"), false);
+    mUseOpenGL = useOpenGL;
+    mSettings->setValue(QLatin1String("Interface/OpenGLRenderer"), mUseOpenGL);
 
-    emit useOpenGLChanged(false);
+    emit useOpenGLChanged(mUseOpenGL);
 }
 
 void Preferences::setObjectTypes(const ObjectTypes &objectTypes)
