@@ -51,7 +51,7 @@ inline bool drawCachedRasterTile(QPainter *painter, const QImage &image)
             || deviceOffsetX != qFloor(deviceOffsetX) || deviceOffsetY != qFloor(deviceOffsetY))
         return false;
     const qreal scale = qMax(qAbs(transform.m11()), qAbs(transform.m12()));
-    if (scale != 0.25 && scale != 0.5)
+    if (scale != 0.25 && scale != 0.5 && scale != 0.75)
         return false;
     if (!((qAbs(transform.m11()) == scale && qAbs(transform.m22()) == scale
             && transform.m12() == 0 && transform.m21() == 0)
@@ -65,10 +65,10 @@ inline bool drawCachedRasterTile(QPainter *painter, const QImage &image)
     const QRect bounds = transform.mapRect(QRectF(image.rect())).toAlignedRect();
     if (bounds.isEmpty() || qint64(bounds.width()) * bounds.height() > 1024 * 1024)
         return false;
-    const quint32 packed = quint32(qRound(transform.m11() * 4) + 2)
-            | quint32(qRound(transform.m12() * 4) + 2) << 3
-            | quint32(qRound(transform.m21() * 4) + 2) << 6
-            | quint32(qRound(transform.m22() * 4) + 2) << 9
+    const quint32 packed = quint32(qRound(transform.m11() * 4) + 3)
+            | quint32(qRound(transform.m12() * 4) + 3) << 3
+            | quint32(qRound(transform.m21() * 4) + 3) << 6
+            | quint32(qRound(transform.m22() * 4) + 3) << 9
             | quint32(phaseX * 4) << 12 | quint32(phaseY * 4) << 14;
     const RasterTileKey key{image.cacheKey(), packed};
     thread_local QCache<RasterTileKey, QImage> cache(rasterTileCacheCapacityKiB());
