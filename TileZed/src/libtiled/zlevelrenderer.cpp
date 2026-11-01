@@ -37,8 +37,14 @@
 #include "ztilelayergroup.h"
 
 #include <cmath>
+#include <functional>
 
+#include <QCoreApplication>
+#include <QPaintEngine>
 #include <QPainterPath>
+#include <QRunnable>
+#include <QThread>
+#include <QThreadPool>
 
 using namespace Tiled;
 
@@ -46,6 +52,10 @@ using namespace Tiled;
 #define DISPLAY_TILE_HEIGHT (map()->tileHeight() * (is2x() ? 2 : 1))
 
 namespace {
+const int minimumParallelTilePositions = 12288;
+const int minimumParallelBandHeight = 48;
+const int bandsPerParallelThread = 2;
+
 quint64 &frameRenderedTileCount()
 {
     static thread_local quint64 count = 0;
@@ -56,6 +66,57 @@ bool &renderedTileCountingEnabled()
     static thread_local bool enabled = false;
     return enabled;
 }
+
+class TileBandRenderTask : public QRunnable
+{
+public:
+    explicit TileBandRenderTask(std::function<void()> work)
+        : mWork(std::move(work))
+    {
+    }
+
+    void run() override
+    {
+        mWork();
+    }
+
+private:
+    std::function<void()> mWork;
+};
+
+QThreadPool *tileBandThreadPool()
+{
+    static QThreadPool *threadPool = [] {
+        QThreadPool *pool = new QThreadPool(QCoreApplication::instance());
+        pool->setMaxThreadCount(qMax(1, QThread::idealThreadCount()));
+        return pool;
+    }();
+    return threadPool;
+}
+
+Tile *loadPlaceholderTile(const QString &tilesetName, const QString &imageFileName)
+{
+    Tileset *tileset = new Tileset(tilesetName, 64, 128);
+    if (tileset->loadFromImage(QImage(imageFileName), imageFileName))
+        return tileset->tileAt(0);
+    delete tileset;
+    return nullptr;
+}
+
+Tile *invisiblePlaceholderTile()
+{
+    static Tile *tile = loadPlaceholderTile(QStringLiteral("INVISIBLE"),
+                                            QStringLiteral(":/images/invisible-tile.svg"));
+    return tile;
+}
+
+Tile *missingPlaceholderTile()
+{
+    static Tile *tile = loadPlaceholderTile(QStringLiteral("MISSING"),
+                                            QStringLiteral(":/images/missing-tile.svg"));
+    return tile;
+}
+
 struct JUMBO
 {
     QString tilesetName;
@@ -239,9 +300,6 @@ void ZLevelRenderer::drawGrid(QPainter *painter, const QRectF &rect,
     }
 }
 
-static Tile *g_invisible_tile = nullptr;
-static Tile *g_missing_tile = nullptr;
-
 void ZLevelRenderer::drawTileLayer(QPainter *painter,
                                       const TileLayer *layer,
                                       const QRectF &exposed) const
@@ -413,7 +471,19 @@ void ZLevelRenderer::drawTileLayerGroup(QPainter *painter, ZTileLayerGroup *laye
     if (tileWidth <= 0 || tileHeight <= 1 || layerGroup->bounds().isEmpty())
         return;
 
-    int level = layerGroup->level();
+    const QRect rect = tileLayerGroupDrawRect(layerGroup, exposed);
+    layerGroup->prepareDrawing(this, rect);
+
+    if (drawTileLayerGroupInParallel(painter, layerGroup, exposed, renderData))
+        return;
+    drawTileLayerGroupRect(painter, layerGroup, rect, renderData);
+}
+
+QRect ZLevelRenderer::tileLayerGroupDrawRect(const ZTileLayerGroup *layerGroup,
+                                             const QRectF &exposed) const
+{
+    const int tileWidth = DISPLAY_TILE_WIDTH;
+    const int tileHeight = DISPLAY_TILE_HEIGHT;
 
     QRect rect = exposed.toAlignedRect();
     if (rect.isNull())
@@ -427,6 +497,122 @@ void ZLevelRenderer::drawTileLayerGroup(QPainter *painter, ZTileLayerGroup *laye
                 -drawMargins.bottom(),
                 drawMargins.left(),
                 drawMargins.top());
+    return rect;
+}
+
+bool ZLevelRenderer::drawTileLayerGroupInParallel(QPainter *painter, ZTileLayerGroup *layerGroup,
+                                                  const QRectF &exposed,
+                                                  ZTileLayerGroupRenderData *renderData) const
+{
+    if (mAbortDrawing != nullptr)
+        return false;
+    const QCoreApplication *application = QCoreApplication::instance();
+    if (application == nullptr || QThread::currentThread() != application->thread())
+        return false;
+    QPaintEngine *paintEngine = painter->paintEngine();
+    if (paintEngine == nullptr || paintEngine->type() != QPaintEngine::Raster
+            || painter->compositionMode() != QPainter::CompositionMode_SourceOver)
+        return false;
+    const QPaintDevice *targetDevice = paintEngine->paintDevice();
+    if (targetDevice == nullptr || targetDevice->devType() != QInternal::Image)
+        return false;
+    const QImage *target = static_cast<const QImage*>(targetDevice);
+
+    const QTransform deviceTransform = painter->deviceTransform();
+    if (deviceTransform.type() > QTransform::TxScale
+            || deviceTransform.m11() <= 0 || deviceTransform.m22() <= 0)
+        return false;
+
+    const QRectF sceneRect = exposed.isNull() ? layerGroup->boundingRect(this) : exposed;
+    const qreal tilePositionArea = DISPLAY_TILE_WIDTH * DISPLAY_TILE_HEIGHT / 2.0;
+    if (sceneRect.width() * sceneRect.height() < minimumParallelTilePositions * tilePositionArea)
+        return false;
+
+    const QTransform baseDeviceTransform = painter->worldTransform().inverted() * deviceTransform;
+    QRect deviceRect = deviceTransform.mapRect(sceneRect).toAlignedRect() & target->rect();
+    if (painter->hasClipping())
+        deviceRect &= deviceTransform.mapRect(painter->clipBoundingRect()).toAlignedRect();
+
+    QThreadPool *threadPool = tileBandThreadPool();
+    const int bandCount = qMin(threadPool->maxThreadCount() * bandsPerParallelThread,
+                               deviceRect.height() / minimumParallelBandHeight);
+    if (bandCount < 2)
+        return false;
+
+    struct TileBand
+    {
+        QRect deviceRect;
+        QImage image;
+        ZTileLayerGroupRenderData *renderData = nullptr;
+        quint64 drawnTiles = 0;
+    };
+    QVector<TileBand> bands(bandCount);
+    for (int bandIndex = 0; bandIndex < bandCount; ++bandIndex) {
+        TileBand &band = bands[bandIndex];
+        const int top = deviceRect.top() + deviceRect.height() * bandIndex / bandCount;
+        const int bottom = deviceRect.top() + deviceRect.height() * (bandIndex + 1) / bandCount;
+        band.deviceRect = QRect(deviceRect.left(), top, deviceRect.width(), bottom - top);
+        if (renderData != nullptr) {
+            band.renderData = layerGroup->createRenderData();
+            if (band.renderData == nullptr) {
+                for (const TileBand &createdBand : qAsConst(bands))
+                    layerGroup->destroyRenderData(createdBand.renderData);
+                return false;
+            }
+        }
+    }
+
+    invisiblePlaceholderTile();
+    missingPlaceholderTile();
+
+    const QTransform deviceToScene = deviceTransform.inverted();
+    const QPainter::RenderHints renderHints = painter->renderHints();
+    const qreal opacity = painter->opacity();
+    auto drawBand = [&](TileBand &band) {
+        band.image = target->copy(band.deviceRect);
+        band.image.setDevicePixelRatio(1.0);
+        QPainter bandPainter(&band.image);
+        bandPainter.setRenderHints(renderHints);
+        bandPainter.setOpacity(opacity);
+        bandPainter.setTransform(deviceTransform
+                                 * QTransform::fromTranslate(-band.deviceRect.x(),
+                                                             -band.deviceRect.y()));
+        const QRectF bandSceneRect = deviceToScene.mapRect(QRectF(band.deviceRect));
+        band.drawnTiles = drawTileLayerGroupRect(&bandPainter, layerGroup,
+                                                 tileLayerGroupDrawRect(layerGroup, bandSceneRect),
+                                                 band.renderData);
+    };
+    for (TileBand &band : bands)
+        threadPool->start(new TileBandRenderTask([&drawBand, &band] { drawBand(band); }));
+    threadPool->waitForDone();
+
+    quint64 drawnTiles = 0;
+    painter->save();
+    painter->setCompositionMode(QPainter::CompositionMode_Source);
+    painter->setOpacity(1.0);
+    painter->setRenderHint(QPainter::SmoothPixmapTransform, false);
+    painter->setWorldTransform(baseDeviceTransform.inverted());
+    for (const TileBand &band : qAsConst(bands)) {
+        if (band.drawnTiles > 0)
+            painter->drawImage(band.deviceRect.topLeft(), band.image);
+        drawnTiles += band.drawnTiles;
+        layerGroup->destroyRenderData(band.renderData);
+    }
+    painter->restore();
+
+    if (renderedTileCountingEnabled())
+        addRenderedTileCount(drawnTiles);
+    return true;
+}
+
+quint64 ZLevelRenderer::drawTileLayerGroupRect(QPainter *painter, ZTileLayerGroup *layerGroup,
+                                               const QRect &rect,
+                                               ZTileLayerGroupRenderData *renderData) const
+{
+    const int tileWidth = DISPLAY_TILE_WIDTH;
+    const int tileHeight = DISPLAY_TILE_HEIGHT;
+
+    int level = layerGroup->level();
 
     // Determine the tile and pixel coordinates to start at
     QPointF tilePos = pixelToTileCoords(rect.x(), rect.y(), level);
@@ -463,10 +649,9 @@ void ZLevelRenderer::drawTileLayerGroup(QPainter *painter, ZTileLayerGroup *laye
     /*static*/ QVector<const Cell*> cells(40); // or QVarLengthArray
     /*static*/ QVector<qreal> opacities(40); // or QVarLengthArray
 
-    layerGroup->prepareDrawing(this, rect);
-
     qreal opacity = painter->opacity();
     const bool countRenderedTiles = renderedTileCountingEnabled();
+    quint64 drawnTiles = 0;
 
     for (int y = startPos.y(); y - tileHeight < rect.bottom();
          y += tileHeight / 2)
@@ -480,7 +665,7 @@ void ZLevelRenderer::drawTileLayerGroup(QPainter *painter, ZTileLayerGroup *laye
                     // Multi-threading
                     if (mAbortDrawing && *mAbortDrawing) {
                         painter->setTransform(baseTransform);
-                        return;
+                        return drawnTiles;
                     }
                     const Cell *cell = cells[i];
                     if (!cell->isEmpty()) {
@@ -491,27 +676,15 @@ void ZLevelRenderer::drawTileLayerGroup(QPainter *painter, ZTileLayerGroup *laye
                                 || transparentTile) {
                             if (isShowInvisibleTiles() == false)
                                 continue;
-                            if (g_invisible_tile == nullptr) {
-                                Tileset *ts = new Tileset(QLatin1String("INVISIBLE"), 64, 128);
-                                if (ts->loadFromImage(QImage(QLatin1String(":/images/invisible-tile.svg")), QLatin1String(":/images/invisible-tile.svg"))) {
-                                    g_invisible_tile = ts->tileAt(0);
-                                }
-                            }
-                            if (g_invisible_tile)
-                                tile = g_invisible_tile;
+                            if (Tile *invisibleTile = invisiblePlaceholderTile())
+                                tile = invisibleTile;
 
                         }
                         if (tile->image().isNull() && !tile->hasResolvedSource()) {
-                            if (g_missing_tile == nullptr) {
-                                Tileset *ts = new Tileset(QLatin1String("MISSING"), 64, 128);
-                                if (ts->loadFromImage(QImage(QLatin1String(":/images/missing-tile.svg")), QLatin1String(":/images/missing-tile.svg"))) {
-                                    g_missing_tile = ts->tileAt(0);
-                                }
-                            }
-                            if (g_missing_tile)
-                                tile = g_missing_tile;
+                            if (Tile *missingTile = missingPlaceholderTile())
+                                tile = missingTile;
                         }
-                        QImage img = layerGroup->useImageBlack(columnItr.x(), columnItr.y()) ? tile->imageBlack() : tile->image();
+                        const QImage &img = layerGroup->useImageBlack(columnItr.x(), columnItr.y()) ? tile->imageBlack() : tile->image();
                         const QPoint offset = tile->tileset()->tileOffset() + tile->offset();
 
                         qreal m11 = 1;      // Horizontal scaling factor
@@ -544,7 +717,7 @@ void ZLevelRenderer::drawTileLayerGroup(QPainter *painter, ZTileLayerGroup *laye
                                                              : img.height();
                         }
 
-                        QString tilesetName = cell->tile->tileset()->name();
+                        const QString &tilesetName = cell->tile->tileset()->name();
                         QSize customSize = CustomTileSize::forTileset(tilesetName);
                         bool bJUMBO = !customSize.isEmpty();
                         if (bJUMBO) {
@@ -575,6 +748,7 @@ void ZLevelRenderer::drawTileLayerGroup(QPainter *painter, ZTileLayerGroup *laye
 
                         if (!PZTools::drawCachedRasterTile(painter, img))
                             painter->drawImage(0, 0, img);
+                        ++drawnTiles;
                         if (countRenderedTiles)
                             addRenderedTileCount();
 
@@ -603,6 +777,7 @@ void ZLevelRenderer::drawTileLayerGroup(QPainter *painter, ZTileLayerGroup *laye
     }
 
     painter->setTransform(baseTransform);
+    return drawnTiles;
 }
 #endif // ZOMBOID
 

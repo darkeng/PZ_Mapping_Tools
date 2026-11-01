@@ -94,6 +94,11 @@ public:
                             int level = 0) const override;
 
 private:
+    QRect tileLayerGroupDrawRect(const ZTileLayerGroup *layerGroup, const QRectF &exposed) const;
+    bool drawTileLayerGroupInParallel(QPainter *painter, ZTileLayerGroup *layerGroup,
+                                      const QRectF &exposed, ZTileLayerGroupRenderData *renderData) const;
+    quint64 drawTileLayerGroupRect(QPainter *painter, ZTileLayerGroup *layerGroup,
+                                   const QRect &rect, ZTileLayerGroupRenderData *renderData) const;
     QPolygonF tileRectToPolygon(const QRect &rect, int level = 0) const;
     QPolygonF tileRectToPolygon(const QRectF &rect, int level = 0) const;
     void drawJumboTreeTile_Trunk(Tiled::Tile *tile, QPainter *painter, const QTransform &baseTransform, qreal x, qreal y, qreal m11, qreal m12, qreal m21, qreal m22) const;

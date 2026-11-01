@@ -109,6 +109,8 @@ private:
     void prepareDrawing(const Tiled::MapRenderer *renderer, const QRect &rect, CompositeLayerGroup *rootGroup);
 public:
     bool orderedCellsAt(const QPoint &pos, QVector<const Tiled::Cell*>& cells, QVector<qreal> &opacities, Tiled::ZTileLayerGroupRenderData *renderData = nullptr) const override;
+    Tiled::ZTileLayerGroupRenderData *createRenderData() const override;
+    void destroyRenderData(Tiled::ZTileLayerGroupRenderData *renderData) const override;
 private:
     void orderedCellsAt(const QPoint &pos, const QRegion &suppressRgn, const QPoint &rootPos, QVector<OrderedCell> &cells);
 public:

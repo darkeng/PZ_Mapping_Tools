@@ -32,6 +32,7 @@
 #include "tileset.h"
 
 #include <QMargins>
+#include <QMutex>
 #include <QPainter>
 #include <QHashFunctions>
 
@@ -107,6 +108,8 @@ QImage Tile::finalImage(int width, int height)
 
 const QImage &Tile::imageBlack()
 {
+    static QMutex imageBlackMutex;
+    QMutexLocker locker(&imageBlackMutex);
     if (mImageBlackValid == false) {
         mImageBlackValid = true;
         createImageBlack();

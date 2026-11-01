@@ -2,11 +2,21 @@
 #define PZTOOLS_RASTERTILECACHE_H
 
 #include <QCache>
+#include <QCoreApplication>
 #include <QPaintEngine>
 #include <QPainter>
+#include <QThread>
 #include <QtMath>
 
 namespace PZTools {
+
+inline int rasterTileCacheCapacityKiB()
+{
+    const QCoreApplication *application = QCoreApplication::instance();
+    const bool applicationThread = application != nullptr
+            && QThread::currentThread() == application->thread();
+    return applicationThread ? 64 * 1024 : 8 * 1024;
+}
 
 struct RasterTileKey
 {
@@ -61,7 +71,7 @@ inline bool drawCachedRasterTile(QPainter *painter, const QImage &image)
             | quint32(qRound(transform.m22() * 4) + 2) << 9
             | quint32(phaseX * 4) << 12 | quint32(phaseY * 4) << 14;
     const RasterTileKey key{image.cacheKey(), packed};
-    thread_local QCache<RasterTileKey, QImage> cache(64 * 1024);
+    thread_local QCache<RasterTileKey, QImage> cache(rasterTileCacheCapacityKiB());
     QImage *cached = cache.object(key);
     if (!cached) {
         cached = new QImage(bounds.size(), QImage::Format_ARGB32_Premultiplied);

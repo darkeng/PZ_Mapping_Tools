@@ -377,6 +377,16 @@ bool CompositeLayerGroup::orderedCellsAt(const QPoint &pos,
     return !cells.isEmpty();
 }
 
+ZTileLayerGroupRenderData *CompositeLayerGroup::createRenderData() const
+{
+    return reinterpret_cast<ZTileLayerGroupRenderData*>(new OrderedCellsTemporaries);
+}
+
+void CompositeLayerGroup::destroyRenderData(ZTileLayerGroupRenderData *renderData) const
+{
+    delete reinterpret_cast<OrderedCellsTemporaries*>(renderData);
+}
+
 void CompositeLayerGroup::orderedCellsAt(const QPoint &pos, const QRegion &suppressRgn, const QPoint &rootPos, QVector<OrderedCell> &cells)
 {
     const MapComposite *root = mOwner->root();

@@ -62,6 +62,9 @@ public:
                                 QVector<qreal> &opacities, ZTileLayerGroupRenderData *renderData = nullptr) const = 0;
     virtual void prepareDrawing(const MapRenderer *renderer, const QRect &rect) = 0;
 
+    virtual ZTileLayerGroupRenderData *createRenderData() const;
+    virtual void destroyRenderData(ZTileLayerGroupRenderData *renderData) const;
+
     virtual bool useImageBlack(int x, int y) const;
 
     void setLevel(int level) { mLevel = level; }

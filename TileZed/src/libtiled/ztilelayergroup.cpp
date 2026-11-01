@@ -122,6 +122,16 @@ QRectF ZTileLayerGroup::boundingRect(const MapRenderer *renderer) const
     return boundingRect;
 }
 
+ZTileLayerGroupRenderData *ZTileLayerGroup::createRenderData() const
+{
+    return nullptr;
+}
+
+void ZTileLayerGroup::destroyRenderData(ZTileLayerGroupRenderData *renderData) const
+{
+    Q_UNUSED(renderData)
+}
+
 bool ZTileLayerGroup::useImageBlack(int x, int y) const
 {
     Q_UNUSED(x)
