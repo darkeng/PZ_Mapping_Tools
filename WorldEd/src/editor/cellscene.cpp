@@ -1106,7 +1106,7 @@ void LayerGroupVBO::paint2(QPainter *painter, Tiled::MapRenderer *renderer,
                     GLuint end = start + 4 - 1;
                     GLuint count = 4;
                     if (tiles[i].mTexture == nullptr) {
-                        tiles[i].mTexture = TILESET_TEXTURES.get(tiles[i].mTilesetName, mMapCompositeVBO->mUsedTilesets);
+                        tiles[i].mTexture = TILESET_TEXTURES.get(tiles[i].mTilesetName, mMapCompositeVBO->usedTilesets());
                     }
 #if TILESET_TEXTURE_GL == 0
                     if (tiles[i].mTexture == nullptr || tiles[i].mTexture->mID == -1)
@@ -1216,7 +1216,7 @@ void LayerGroupVBO::paint2(QPainter *painter, Tiled::MapRenderer *renderer,
                             }
                         }
                         if (tile.mTexture == nullptr) {
-                            tile.mTexture = TILESET_TEXTURES.get(tile.mTilesetName, mMapCompositeVBO->mUsedTilesets);
+                            tile.mTexture = TILESET_TEXTURES.get(tile.mTilesetName, mMapCompositeVBO->usedTilesets());
                         }
 #if TILESET_TEXTURE_GL == 0
                         if (tile.mTexture == nullptr || tile.mTexture->mID == -1)
@@ -1398,14 +1398,14 @@ void LayerGroupVBO::gatherTiles(Tiled::MapRenderer *renderer, const QRectF& expo
                         tile = missingTile;
                     }
                     Tileset *tileset = tile->tileset();
-                    if (!mMapCompositeVBO->mUsedTilesets.contains(tileset))
-                        mMapCompositeVBO->mUsedTilesets.append(tileset);
+                    if (!mMapCompositeVBO->usedTilesets().contains(tileset))
+                        mMapCompositeVBO->usedTilesets().append(tileset);
                     QSize customSize = CustomTileSize::forTileset(tileset->name());
                     bool bJUMBO = !customSize.isEmpty();
                     VBOTile vboTile;
                     vboTile.mSubMap = cell.mSubMap;
                     vboTile.mHideIfVisible = cell.mHideIfVisible;
-                    vboTile.mLayerIndex = mMapCompositeVBO->mLayerNameToIndex.value(cell.mLayerName, -1);
+                    vboTile.mLayerIndex = mMapCompositeVBO->layerNameToIndex().value(cell.mLayerName, -1);
                     vboTile.mRect = QRect(screenPos.x() + tileset->tileOffset().x() + tile->offset().x(),
                                           screenPos.y() + tileset->tileOffset().y() + tile->offset().y() - tile->height(),
                                           tile->atlasSize().width(), tile->atlasSize().height());
@@ -1438,9 +1438,9 @@ void LayerGroupVBO::gatherTiles(Tiled::MapRenderer *renderer, const QRectF& expo
                     if (overlayTile && !overlayTile->image().isNull()) {
                         Tileset *overlayTileset =
                                 overlayTile->tileset();
-                        if (!mMapCompositeVBO->mUsedTilesets.contains(
+                        if (!mMapCompositeVBO->usedTilesets().contains(
                                     overlayTileset)) {
-                            mMapCompositeVBO->mUsedTilesets.append(
+                            mMapCompositeVBO->usedTilesets().append(
                                         overlayTileset);
                         }
                         VBOTile overlayVbo = vboTile;
@@ -1731,6 +1731,50 @@ LayerGroupVBO *MapCompositeVBO::getLayerVBO(CompositeLayerGroupItem *item)
     return layerVBO;
 }
 
+void MapCompositeVBO::invalidatePaintState(MapComposite *source, int level)
+{
+    mPaintSource = source;
+    mPaintLevel = level;
+    mUsedTilesetsDirty = true;
+    mLayerNameToIndexDirty = true;
+}
+
+QList<Tileset *> &MapCompositeVBO::usedTilesets()
+{
+    if (mUsedTilesetsDirty) {
+        mUsedTilesetsDirty = false;
+        mUsedTilesets.clear();
+        if (mPaintSource != nullptr)
+            mUsedTilesets = mPaintSource->root()->usedTilesets();
+        Tileset *invisibleTileset = Internal::TilesetManager::instance()->invisibleTileset();
+        Tileset *missingTileset = Internal::TilesetManager::instance()->missingTileset();
+        if (mUsedTilesets.contains(invisibleTileset) == false) {
+            mUsedTilesets += invisibleTileset;
+        }
+        if (mUsedTilesets.contains(missingTileset) == false) {
+            mUsedTilesets += missingTileset;
+        }
+    }
+    return mUsedTilesets;
+}
+
+const QMap<QString, int> &MapCompositeVBO::layerNameToIndex()
+{
+    if (mLayerNameToIndexDirty) {
+        mLayerNameToIndexDirty = false;
+        mLayerNameToIndex.clear();
+        if (mPaintSource != nullptr) {
+            if (CompositeLayerGroup *rootLayerGroup = mPaintSource->root()->layerGroupForLevel(mPaintLevel)) {
+                for (int layerIndex = 0; layerIndex < rootLayerGroup->layerCount(); layerIndex++) {
+                    TileLayer *layer = rootLayerGroup->layers()[layerIndex];
+                    mLayerNameToIndex[layer->nameWithPrefix()] = layerIndex;
+                }
+            }
+        }
+    }
+    return mLayerNameToIndex;
+}
+
 ///// ///// ///// ///// /////
 
 CompositeLayerGroupItem::CompositeLayerGroupItem(CellScene *cellScene, CompositeLayerGroup *layerGroup, Tiled::MapRenderer *renderer, QGraphicsItem *parent)
@@ -1802,8 +1846,6 @@ void CompositeLayerGroupItem::paint(QPainter *p, const QStyleOptionGraphicsItem 
         if (exposed.isNull())
             exposed = mLayerGroup->boundingRect(mRenderer).toAlignedRect();
         mLayerGroup->prepareDrawing3(mRenderer, exposed);
-        Tileset *invisibleTileset = Internal::TilesetManager::instance()->invisibleTileset();
-        Tileset *missingTileset = Internal::TilesetManager::instance()->missingTileset();
 
         for (int y = 0; y < 3; y++) {
             for (int x = 0; x < 3; x++) {
@@ -1823,20 +1865,7 @@ void CompositeLayerGroupItem::paint(QPainter *p, const QStyleOptionGraphicsItem 
                     mVBO[x + y * 3] = mcVBO->getLayerVBO(this);
                 }
 
-                mcVBO->mUsedTilesets = mc->root()->usedTilesets();
-                if (mcVBO->mUsedTilesets.contains(invisibleTileset) == false) {
-                    mcVBO->mUsedTilesets += invisibleTileset;
-                }
-                if (mcVBO->mUsedTilesets.contains(missingTileset) == false) {
-                    mcVBO->mUsedTilesets += missingTileset;
-                }
-                mcVBO->mLayerNameToIndex.clear();
-                if (CompositeLayerGroup *rootLayerGroup = mc->root()->layerGroupForLevel(mLayerGroup->level())) {
-                    for (int i = 0; i < rootLayerGroup->layerCount(); i++) {
-                        TileLayer *layer = rootLayerGroup->layers()[i];
-                        mcVBO->mLayerNameToIndex[layer->nameWithPrefix()] = i;
-                    }
-                }
+                mcVBO->invalidatePaintState(mc, mLayerGroup->level());
 
                 mVBO[x + y * 3]->paint(p, mRenderer, option->exposedRect, view);
             }

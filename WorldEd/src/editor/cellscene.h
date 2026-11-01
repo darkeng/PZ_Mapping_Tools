@@ -839,11 +839,21 @@ public:
 
     LayerGroupVBO *getLayerVBO(CompositeLayerGroupItem *item);
 
+    void invalidatePaintState(MapComposite *source, int level);
+    QList<Tiled::Tileset*> &usedTilesets();
+    const QMap<QString,int> &layerNameToIndex();
+
     CellScene *mScene = nullptr;
     MapComposite *mMapComposite = nullptr;
     QRect mBounds;
     QOpenGLShaderProgram mShaderProgram;
     std::array<LayerGroupVBO*,MAX_WORLD_LEVELS> mLayerVBOs;
+
+private:
+    MapComposite *mPaintSource = nullptr;
+    int mPaintLevel = 0;
+    bool mUsedTilesetsDirty = true;
+    bool mLayerNameToIndexDirty = true;
     QList<Tiled::Tileset*> mUsedTilesets;
     QMap<QString,int> mLayerNameToIndex;
 };
