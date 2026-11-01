@@ -31,6 +31,7 @@
 #include "mapobject.h"
 #include "objectgroup.h"
 #include "tile.h"
+#include "tiledrawtarget.h"
 #include "tilelayer.h"
 #include "tileset.h"
 #include "imagelayer.h"
@@ -55,6 +56,102 @@ namespace {
 const int minimumParallelTilePositions = 12288;
 const int minimumParallelBandHeight = 48;
 const int bandsPerParallelThread = 2;
+
+class RasterTileTarget : public TileDrawTarget
+{
+public:
+    explicit RasterTileTarget(QPainter *painter)
+        : mPainter(painter)
+        , mBaseTransform(painter->transform())
+    {
+    }
+
+    ~RasterTileTarget() override
+    {
+        mPainter->setTransform(mBaseTransform);
+    }
+
+    void setOpacity(qreal opacity) override
+    {
+        mPainter->setOpacity(opacity);
+    }
+
+    void drawTile(const QImage &image, const QTransform &transform) override
+    {
+        mPainter->setTransform(transform * mBaseTransform);
+        if (!PZTools::drawCachedRasterTile(mPainter, image))
+            mPainter->drawImage(0, 0, image);
+    }
+
+private:
+    QPainter *mPainter;
+    QTransform mBaseTransform;
+};
+
+struct TileRowCursor
+{
+    QPoint tile;
+    QPointF start;
+    int y = 0;
+    bool shifted = false;
+
+    void advance(int tileWidth, int tileHeight)
+    {
+        if (!shifted) {
+            ++tile.rx();
+            start.rx() += tileWidth / 2;
+        } else {
+            ++tile.ry();
+            start.rx() -= tileWidth / 2;
+        }
+        shifted = !shifted;
+        y += tileHeight / 2;
+    }
+};
+
+TileRowCursor firstTileRow(const ZLevelRenderer &renderer, const QRect &rect, int level,
+                           int tileWidth, int tileHeight)
+{
+    TileRowCursor row;
+
+    // Determine the tile and pixel coordinates to start at
+    const QPointF tilePos = renderer.pixelToTileCoords(rect.x(), rect.y(), level);
+    row.tile = QPoint((int) std::floor(tilePos.x()), (int) std::floor(tilePos.y()));
+    row.start = renderer.tileToPixelCoords(row.tile, level);
+    row.start.rx() -= tileWidth / 2;
+    row.start.ry() += tileHeight;
+
+    /* Determine in which half of the tile the top-left corner of the area we
+     * need to draw is. If we're in the upper half, we need to start one row
+     * up due to those tiles being visible as well. How we go up one row
+     * depends on whether we're in the left or right half of the tile.
+     */
+    const bool inUpperHalf = row.start.y() - rect.y() > tileHeight / 2;
+    const bool inLeftHalf = rect.x() - row.start.x() < tileWidth / 2;
+    if (inUpperHalf) {
+        if (inLeftHalf) {
+            --row.tile.rx();
+            row.start.rx() -= tileWidth / 2;
+        } else {
+            --row.tile.ry();
+            row.start.rx() += tileWidth / 2;
+        }
+        row.start.ry() -= tileHeight / 2;
+    }
+
+    // Determine whether the current row is shifted half a tile to the right
+    row.shifted = inUpperHalf ^ inLeftHalf;
+    row.y = row.start.y();
+    return row;
+}
+
+int tileRowCount(const TileRowCursor &firstRow, const QRect &rect, int tileHeight)
+{
+    int rowCount = 0;
+    for (int y = firstRow.y; y - tileHeight < rect.bottom(); y += tileHeight / 2)
+        ++rowCount;
+    return rowCount;
+}
 
 quint64 &frameRenderedTileCount()
 {
@@ -359,7 +456,7 @@ void ZLevelRenderer::drawTileLayer(QPainter *painter,
     // Determine whether the current row is shifted half a tile to the right
     bool shifted = inUpperHalf ^ inLeftHalf;
 
-    QTransform baseTransform = painter->transform();
+    RasterTileTarget target(painter);
 
     for (int y = startPos.y(); y - tileHeight < rect.bottom();
          y += tileHeight / 2)
@@ -368,10 +465,8 @@ void ZLevelRenderer::drawTileLayer(QPainter *painter,
 
         for (int x = startPos.x(); x < rect.right(); x += tileWidth) {
             // Multi-threading
-            if (mAbortDrawing && *mAbortDrawing) {
-                painter->setTransform(baseTransform);
+            if (mAbortDrawing && *mAbortDrawing)
                 return;
-            }
             if (layer->contains(columnItr)) {
                 const Cell &cell = layer->cellAt(columnItr);
                 if (!cell.isEmpty()) {
@@ -425,19 +520,16 @@ void ZLevelRenderer::drawTileLayer(QPainter *painter,
                         dy += cell.tile->height() / 2;
                     }
 
-                    if (bJUMBO && !tilesetName.contains(QStringLiteral("JUMBOXL")) && !tilesetName.contains(QStringLiteral("JUMBOXXL"))) {
-                        drawJumboTreeTile_Trunk(cell.tile, painter, baseTransform, x, y, m11, m12, m21, m22);
-                    }
+                    const bool jumboTree = bJUMBO
+                            && !tilesetName.contains(QStringLiteral("JUMBOXL"))
+                            && !tilesetName.contains(QStringLiteral("JUMBOXXL"));
+                    if (jumboTree)
+                        drawJumboTreeTile_Trunk(cell.tile, target, x, y, m11, m12, m21, m22);
 
-                    const QTransform transform(m11, m12, m21, m22, dx, dy);
-                    painter->setTransform(transform * baseTransform);
+                    target.drawTile(img, QTransform(m11, m12, m21, m22, dx, dy));
 
-                    if (!PZTools::drawCachedRasterTile(painter, img))
-                        painter->drawImage(0, 0, img);
-
-                    if (bJUMBO && !tilesetName.contains(QStringLiteral("JUMBOXL")) && !tilesetName.contains(QStringLiteral("JUMBOXXL"))) {
-                        drawJumboTreeTile_Leaves(cell.tile, painter, baseTransform, x, y, m11, m12, m21, m22);
-                    }
+                    if (jumboTree)
+                        drawJumboTreeTile_Leaves(cell.tile, target, x, y, m11, m12, m21, m22);
                 }
             }
 
@@ -457,8 +549,6 @@ void ZLevelRenderer::drawTileLayer(QPainter *painter,
             shifted = false;
         }
     }
-
-    painter->setTransform(baseTransform);
 }
 
 #ifdef ZOMBOID
@@ -609,64 +699,44 @@ quint64 ZLevelRenderer::drawTileLayerGroupRect(QPainter *painter, ZTileLayerGrou
                                                const QRect &rect,
                                                ZTileLayerGroupRenderData *renderData) const
 {
+    const int rowCount = tileRowCount(firstTileRow(*this, rect, layerGroup->level(),
+                                                   DISPLAY_TILE_WIDTH, DISPLAY_TILE_HEIGHT),
+                                      rect, DISPLAY_TILE_HEIGHT);
+    RasterTileTarget target(painter);
+    const quint64 drawnTiles = drawTileRows(target, layerGroup, rect, 0, rowCount,
+                                            painter->opacity(), renderData);
+    if (renderedTileCountingEnabled())
+        addRenderedTileCount(drawnTiles);
+    return drawnTiles;
+}
+
+quint64 ZLevelRenderer::drawTileRows(TileDrawTarget &target, ZTileLayerGroup *layerGroup,
+                                     const QRect &rect, int firstRow, int endRow, qreal opacity,
+                                     ZTileLayerGroupRenderData *renderData) const
+{
     const int tileWidth = DISPLAY_TILE_WIDTH;
     const int tileHeight = DISPLAY_TILE_HEIGHT;
 
-    int level = layerGroup->level();
-
-    // Determine the tile and pixel coordinates to start at
-    QPointF tilePos = pixelToTileCoords(rect.x(), rect.y(), level);
-    QPoint rowItr = QPoint((int) std::floor(tilePos.x()),
-                           (int) std::floor(tilePos.y()));
-    QPointF startPos = tileToPixelCoords(rowItr, level);
-    startPos.rx() -= tileWidth / 2;
-    startPos.ry() += tileHeight;
-
-    /* Determine in which half of the tile the top-left corner of the area we
-     * need to draw is. If we're in the upper half, we need to start one row
-     * up due to those tiles being visible as well. How we go up one row
-     * depends on whether we're in the left or right half of the tile.
-     */
-    const bool inUpperHalf = startPos.y() - rect.y() > tileHeight / 2;
-    const bool inLeftHalf = rect.x() - startPos.x() < tileWidth / 2;
-
-    if (inUpperHalf) {
-        if (inLeftHalf) {
-            --rowItr.rx();
-            startPos.rx() -= tileWidth / 2;
-        } else {
-            --rowItr.ry();
-            startPos.rx() += tileWidth / 2;
-        }
-        startPos.ry() -= tileHeight / 2;
-    }
-
-    // Determine whether the current row is shifted half a tile to the right
-    bool shifted = inUpperHalf ^ inLeftHalf;
-
-    QTransform baseTransform = painter->transform();
+    TileRowCursor row = firstTileRow(*this, rect, layerGroup->level(), tileWidth, tileHeight);
+    for (int skippedRow = 0; skippedRow < firstRow; ++skippedRow)
+        row.advance(tileWidth, tileHeight);
 
     /*static*/ QVector<const Cell*> cells(40); // or QVarLengthArray
     /*static*/ QVector<qreal> opacities(40); // or QVarLengthArray
 
-    qreal opacity = painter->opacity();
-    const bool countRenderedTiles = renderedTileCountingEnabled();
     quint64 drawnTiles = 0;
 
-    for (int y = startPos.y(); y - tileHeight < rect.bottom();
-         y += tileHeight / 2)
-    {
-        QPoint columnItr = rowItr;
+    for (int rowIndex = firstRow; rowIndex < endRow; ++rowIndex) {
+        const int y = row.y;
+        QPoint columnItr = row.tile;
 
-        for (int x = startPos.x(); x < rect.right(); x += tileWidth) {
+        for (int x = row.start.x(); x < rect.right(); x += tileWidth) {
             cells.resize(0);
             if (layerGroup->orderedCellsAt(columnItr, cells, opacities, renderData)) {
                 for (int i = 0; i < cells.size(); i++) {
                     // Multi-threading
-                    if (mAbortDrawing && *mAbortDrawing) {
-                        painter->setTransform(baseTransform);
+                    if (mAbortDrawing && *mAbortDrawing)
                         return drawnTiles;
-                    }
                     const Cell *cell = cells[i];
                     if (!cell->isEmpty()) {
                         Tile *tile = cell->tile;
@@ -737,24 +807,18 @@ quint64 ZLevelRenderer::drawTileLayerGroupRect(QPainter *painter, ZTileLayerGrou
                             dy += tile->height() / 2;
                         }
 
-                        if (bJUMBO && !tilesetName.contains(QStringLiteral("JUMBOXL")) && !tilesetName.contains(QStringLiteral("JUMBOXXL"))) {
-                            drawJumboTreeTile_Trunk(cell->tile, painter, baseTransform, x, y, m11, m12, m21, m22);
-                        }
+                        const bool jumboTree = bJUMBO
+                                && !tilesetName.contains(QStringLiteral("JUMBOXL"))
+                                && !tilesetName.contains(QStringLiteral("JUMBOXXL"));
+                        if (jumboTree)
+                            drawJumboTreeTile_Trunk(cell->tile, target, x, y, m11, m12, m21, m22);
 
-                        const QTransform transform(m11, m12, m21, m22, dx, dy);
-                        painter->setTransform(transform * baseTransform);
-
-                        painter->setOpacity(opacities[i] * opacity);
-
-                        if (!PZTools::drawCachedRasterTile(painter, img))
-                            painter->drawImage(0, 0, img);
+                        target.setOpacity(opacities[i] * opacity);
+                        target.drawTile(img, QTransform(m11, m12, m21, m22, dx, dy));
                         ++drawnTiles;
-                        if (countRenderedTiles)
-                            addRenderedTileCount();
 
-                        if (bJUMBO && !tilesetName.contains(QStringLiteral("JUMBOXL")) && !tilesetName.contains(QStringLiteral("JUMBOXXL"))) {
-                            drawJumboTreeTile_Leaves(cell->tile, painter, baseTransform, x, y, m11, m12, m21, m22);
-                        }
+                        if (jumboTree)
+                            drawJumboTreeTile_Leaves(cell->tile, target, x, y, m11, m12, m21, m22);
                     }
                 }
             }
@@ -765,18 +829,9 @@ quint64 ZLevelRenderer::drawTileLayerGroupRect(QPainter *painter, ZTileLayerGrou
         }
 
         // Advance to the next row
-        if (!shifted) {
-            ++rowItr.rx();
-            startPos.rx() += tileWidth / 2;
-            shifted = true;
-        } else {
-            ++rowItr.ry();
-            startPos.rx() -= tileWidth / 2;
-            shifted = false;
-        }
+        row.advance(tileWidth, tileHeight);
     }
 
-    painter->setTransform(baseTransform);
     return drawnTiles;
 }
 #endif // ZOMBOID
@@ -991,7 +1046,7 @@ QPolygonF ZLevelRenderer::tileRectToPolygon(const QRectF &rect, int level) const
     return polygon;
 }
 
-void ZLevelRenderer::drawJumboTreeTile_Trunk(Tile *tile, QPainter *painter, const QTransform &baseTransform, qreal x, qreal y, qreal m11, qreal m12, qreal m21, qreal m22) const
+void ZLevelRenderer::drawJumboTreeTile_Trunk(Tile *tile, TileDrawTarget &target, qreal x, qreal y, qreal m11, qreal m12, qreal m21, qreal m22) const
 {
     if (!tile || !tile->tileset())
         return;
@@ -1011,21 +1066,17 @@ void ZLevelRenderer::drawJumboTreeTile_Trunk(Tile *tile, QPainter *painter, cons
             Tile *tile2 = tileset->tileAt(columns * row_trunk + tile->id() % columns);
             if (!tile2)
                 return;
-            QImage img = tile2->image();
             QPoint offset = tileset->tileOffset() + tile2->offset();
             int dx = offset.x() + x;
             int dy = offset.y() + y - tile2->height();
             dx -= tileWidth / 2;
-            QTransform transform(m11, m12, m21, m22, dx, dy);
-            painter->setTransform(transform * baseTransform);
-            if (!PZTools::drawCachedRasterTile(painter, img))
-                painter->drawImage(0, 0, img);
+            target.drawTile(tile2->image(), QTransform(m11, m12, m21, m22, dx, dy));
             break;
         }
     }
 }
 
-void ZLevelRenderer::drawJumboTreeTile_Leaves(Tile *tile, QPainter *painter, const QTransform &baseTransform, qreal x, qreal y, qreal m11, qreal m12, qreal m21, qreal m22) const
+void ZLevelRenderer::drawJumboTreeTile_Leaves(Tile *tile, TileDrawTarget &target, qreal x, qreal y, qreal m11, qreal m12, qreal m21, qreal m22) const
 {
     if (!tile || !tile->tileset())
         return;
@@ -1045,15 +1096,11 @@ void ZLevelRenderer::drawJumboTreeTile_Leaves(Tile *tile, QPainter *painter, con
             Tile *tile2 = tileset->tileAt(columns * row_summer + tile->id() % columns);
             if (!tile2)
                 return;
-            QImage img = tile2->image();
             QPoint offset = tileset->tileOffset() + tile2->offset();
             int dx = offset.x() + x;
             int dy = offset.y() + y - tile2->height();
             dx -= tileWidth / 2;
-            QTransform transform(m11, m12, m21, m22, dx, dy);
-            painter->setTransform(transform * baseTransform);
-            if (!PZTools::drawCachedRasterTile(painter, img))
-                painter->drawImage(0, 0, img);
+            target.drawTile(tile2->image(), QTransform(m11, m12, m21, m22, dx, dy));
             break;
         }
     }

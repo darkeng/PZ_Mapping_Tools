@@ -33,6 +33,7 @@ namespace Tiled {
 #ifdef ZOMBOID
 class Tile;
 #endif
+class TileDrawTarget;
 
 /**
  * Modified isometric map renderer for Project Zomboid.
@@ -99,10 +100,13 @@ private:
                                       const QRectF &exposed, ZTileLayerGroupRenderData *renderData) const;
     quint64 drawTileLayerGroupRect(QPainter *painter, ZTileLayerGroup *layerGroup,
                                    const QRect &rect, ZTileLayerGroupRenderData *renderData) const;
+    quint64 drawTileRows(TileDrawTarget &target, ZTileLayerGroup *layerGroup, const QRect &rect,
+                         int firstRow, int endRow, qreal opacity,
+                         ZTileLayerGroupRenderData *renderData) const;
     QPolygonF tileRectToPolygon(const QRect &rect, int level = 0) const;
     QPolygonF tileRectToPolygon(const QRectF &rect, int level = 0) const;
-    void drawJumboTreeTile_Trunk(Tiled::Tile *tile, QPainter *painter, const QTransform &baseTransform, qreal x, qreal y, qreal m11, qreal m12, qreal m21, qreal m22) const;
-    void drawJumboTreeTile_Leaves(Tiled::Tile *tile, QPainter *painter, const QTransform &baseTransform, qreal x, qreal y, qreal m11, qreal m12, qreal m21, qreal m22) const;
+    void drawJumboTreeTile_Trunk(Tiled::Tile *tile, TileDrawTarget &target, qreal x, qreal y, qreal m11, qreal m12, qreal m21, qreal m22) const;
+    void drawJumboTreeTile_Leaves(Tiled::Tile *tile, TileDrawTarget &target, qreal x, qreal y, qreal m11, qreal m12, qreal m21, qreal m22) const;
 };
 
 } // namespace Tiled

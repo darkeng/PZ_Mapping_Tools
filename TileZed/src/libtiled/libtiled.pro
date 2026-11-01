@@ -59,6 +59,7 @@ HEADERS += compression.h \
     staggeredrenderer.h \
     tile.h \
     tiled_global.h \
+    tiledrawtarget.h \
     tilelayer.h \
     tileset.h \
     gidmapper.h \
