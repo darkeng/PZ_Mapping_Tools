@@ -4,6 +4,7 @@ include(../zlib/zlib.pri)
 
 TEMPLATE = lib
 TARGET = tiled
+greaterThan(QT_MAJOR_VERSION, 5): QT += opengl
 isEmpty(INSTALL_ONLY_BUILD) {
     target.path = $${LIBDIR}
     INSTALLS += target
@@ -29,6 +30,7 @@ SOURCES += compression.cpp \
     maprenderer.cpp \
     mapwriter.cpp \
     objectgroup.cpp \
+    opengltilerenderer.cpp \
     orthogonalrenderer.cpp \
     properties.cpp \
     propertiesgrid.cpp \
@@ -53,6 +55,7 @@ HEADERS += compression.h \
     mapwriter.h \
     object.h \
     objectgroup.h \
+    opengltilerenderer.h \
     orthogonalrenderer.h \
     properties.h \
     propertiesgrid.h \

@@ -96,6 +96,8 @@ public:
 
 private:
     QRect tileLayerGroupDrawRect(const ZTileLayerGroup *layerGroup, const QRectF &exposed) const;
+    bool drawTileLayerGroupWithOpenGL(QPainter *painter, ZTileLayerGroup *layerGroup,
+                                      const QRect &rect, ZTileLayerGroupRenderData *renderData) const;
     bool drawTileLayerGroupInParallel(QPainter *painter, ZTileLayerGroup *layerGroup,
                                       const QRectF &exposed, ZTileLayerGroupRenderData *renderData) const;
     quint64 drawTileLayerGroupRect(QPainter *painter, ZTileLayerGroup *layerGroup,

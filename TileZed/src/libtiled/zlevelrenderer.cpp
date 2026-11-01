@@ -30,6 +30,7 @@
 #include "map.h"
 #include "mapobject.h"
 #include "objectgroup.h"
+#include "opengltilerenderer.h"
 #include "tile.h"
 #include "tiledrawtarget.h"
 #include "tilelayer.h"
@@ -37,8 +38,10 @@
 #include "imagelayer.h"
 #include "ztilelayergroup.h"
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QPaintEngine>
@@ -56,6 +59,8 @@ namespace {
 const int minimumParallelTilePositions = 12288;
 const int minimumParallelBandHeight = 48;
 const int bandsPerParallelThread = 2;
+const int minimumParallelOpenGLTilePositions = 4096;
+const int minimumOpenGLBatchRows = 8;
 
 class RasterTileTarget : public TileDrawTarget
 {
@@ -564,6 +569,8 @@ void ZLevelRenderer::drawTileLayerGroup(QPainter *painter, ZTileLayerGroup *laye
     const QRect rect = tileLayerGroupDrawRect(layerGroup, exposed);
     layerGroup->prepareDrawing(this, rect);
 
+    if (drawTileLayerGroupWithOpenGL(painter, layerGroup, rect, renderData))
+        return;
     if (drawTileLayerGroupInParallel(painter, layerGroup, exposed, renderData))
         return;
     drawTileLayerGroupRect(painter, layerGroup, rect, renderData);
@@ -588,6 +595,116 @@ QRect ZLevelRenderer::tileLayerGroupDrawRect(const ZTileLayerGroup *layerGroup,
                 drawMargins.left(),
                 drawMargins.top());
     return rect;
+}
+
+bool ZLevelRenderer::drawTileLayerGroupWithOpenGL(QPainter *painter, ZTileLayerGroup *layerGroup,
+                                                  const QRect &rect,
+                                                  ZTileLayerGroupRenderData *renderData) const
+{
+    if (mAbortDrawing != nullptr)
+        return false;
+    const QPaintEngine *paintEngine = painter->paintEngine();
+    if (paintEngine == nullptr || paintEngine->type() != QPaintEngine::OpenGL2
+            || painter->compositionMode() != QPainter::CompositionMode_SourceOver
+            || painter->hasClipping())
+        return false;
+    const QTransform deviceTransform = painter->deviceTransform();
+    if (!deviceTransform.isAffine())
+        return false;
+
+    painter->beginNativePainting();
+    OpenGLTileRenderer *openGLRenderer = OpenGLTileRenderer::forCurrentContext();
+    if (openGLRenderer == nullptr) {
+        painter->endNativePainting();
+        return false;
+    }
+
+    const int tileWidth = DISPLAY_TILE_WIDTH;
+    const int tileHeight = DISPLAY_TILE_HEIGHT;
+    const int rowCount = tileRowCount(firstTileRow(*this, rect, layerGroup->level(),
+                                                   tileWidth, tileHeight),
+                                      rect, tileHeight);
+    const qint64 tilePositions = qint64(rowCount) * (rect.width() / tileWidth + 1);
+    QThreadPool *threadPool = tileBandThreadPool();
+    int batchCount = 1;
+    if (tilePositions >= minimumParallelOpenGLTilePositions) {
+        batchCount = qBound(1, qMin(threadPool->maxThreadCount() * bandsPerParallelThread,
+                                    rowCount / minimumOpenGLBatchRows),
+                            rowCount);
+    }
+
+    struct TileRowRange
+    {
+        int firstRow = 0;
+        int endRow = 0;
+        ZTileLayerGroupRenderData *renderData = nullptr;
+        quint64 drawnTiles = 0;
+    };
+    QVector<TileRowRange> rowRanges(batchCount);
+    for (int batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+        TileRowRange &rowRange = rowRanges[batchIndex];
+        rowRange.firstRow = rowCount * batchIndex / batchCount;
+        rowRange.endRow = rowCount * (batchIndex + 1) / batchCount;
+        rowRange.renderData = renderData;
+        if (batchCount > 1 && renderData != nullptr)
+            rowRange.renderData = layerGroup->createRenderData();
+    }
+    const bool renderDataCreated = std::all_of(rowRanges.cbegin(), rowRanges.cend(),
+            [renderData](const TileRowRange &rowRange) {
+        return renderData == nullptr || rowRange.renderData != nullptr;
+    });
+    if (!renderDataCreated) {
+        for (TileRowRange &rowRange : rowRanges)
+            layerGroup->destroyRenderData(rowRange.renderData);
+        rowRanges = {TileRowRange{0, rowCount, renderData, 0}};
+        batchCount = 1;
+    }
+
+    const qreal opacity = painter->opacity();
+    std::vector<OpenGLTileBatch> batches;
+    batches.reserve(size_t(batchCount));
+    for (int batchIndex = 0; batchIndex < batchCount; ++batchIndex)
+        batches.emplace_back(openGLRenderer->atlas(), opacity);
+
+    if (batchCount == 1) {
+        rowRanges[0].drawnTiles = drawTileRows(batches[0], layerGroup, rect, 0, rowCount,
+                                               opacity, renderData);
+    } else {
+        invisiblePlaceholderTile();
+        missingPlaceholderTile();
+        for (int batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+            TileRowRange &rowRange = rowRanges[batchIndex];
+            OpenGLTileBatch &batch = batches[size_t(batchIndex)];
+            threadPool->start(new TileBandRenderTask([&, layerGroup] {
+                rowRange.drawnTiles = drawTileRows(batch, layerGroup, rect,
+                                                   rowRange.firstRow, rowRange.endRow,
+                                                   opacity, rowRange.renderData);
+            }));
+        }
+        threadPool->waitForDone();
+        for (TileRowRange &rowRange : rowRanges)
+            layerGroup->destroyRenderData(rowRange.renderData);
+    }
+
+    QVector<OpenGLTileBatch *> drawableBatches;
+    drawableBatches.reserve(batchCount);
+    quint64 drawnTiles = 0;
+    for (int batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
+        OpenGLTileBatch &batch = batches[size_t(batchIndex)];
+        if (!batch.isDrawable()) {
+            painter->endNativePainting();
+            return false;
+        }
+        drawableBatches.append(&batch);
+        drawnTiles += rowRanges[batchIndex].drawnTiles;
+    }
+    openGLRenderer->draw(drawableBatches, deviceTransform,
+                         painter->testRenderHint(QPainter::SmoothPixmapTransform));
+    painter->endNativePainting();
+
+    if (renderedTileCountingEnabled())
+        addRenderedTileCount(drawnTiles);
+    return true;
 }
 
 bool ZLevelRenderer::drawTileLayerGroupInParallel(QPainter *painter, ZTileLayerGroup *layerGroup,
