@@ -41,6 +41,7 @@
 #include <QTimer>
 
 #include <array>
+#include <vector>
 
 class BaseCellSceneTool;
 class CellDocument;
@@ -735,6 +736,17 @@ public:
     int mChangeCount = -1;
 };
 
+const int TILE_ATLAS_SAMPLER_COUNT = 16;
+const int TILE_ATLAS_FALLBACK_UNIT = TILE_ATLAS_SAMPLER_COUNT - 1;
+const int TILE_ATLAS_UNRESOLVED_PAGE = -2;
+const int TILE_ATLAS_FALLBACK_PAGE = -1;
+
+struct TilesetAtlasPlacement
+{
+    int mPage = -1;
+    QRect mRect;
+};
+
 class TilesetTexturesPerContext
 {
 public:
@@ -745,6 +757,23 @@ public:
     QSet<QString> mMissing;
     QMap<QString, TilesetTexture*> mTextureMap;
     QList<TilesetTexture*> mTextures;
+
+    struct AtlasShelf
+    {
+        int mPage;
+        int mX;
+        int mY;
+        int mHeight;
+    };
+    QVector<GLuint> mAtlasPages;
+    QVector<int> mAtlasPageUsedHeight;
+    QVector<AtlasShelf> mAtlasShelves;
+    QMap<QString, TilesetAtlasPlacement> mAtlasPlacements;
+    QSet<QString> mAtlasChanged;
+    QSet<QString> mAtlasUnavailable;
+    int mAtlasPageSize = 0;
+    int mAtlasMaxPages = 0;
+    quint64 mAtlasGeneration = 0;
 };
 
 class TilesetTextures : public QObject
@@ -753,12 +782,17 @@ class TilesetTextures : public QObject
 public:
     TilesetTexture *get(const QString& tilesetName, const QList<Tiled::Tileset*> &tilesets);
     Tiled::Tileset *findTileset(const QString& tilesetName, const QList<Tiled::Tileset*> &tilesets);
+    TilesetTexturesPerContext *currentContextTextures();
+    const TilesetAtlasPlacement *atlasPlacement(const QString& tilesetName, const QList<Tiled::Tileset*> &tilesets);
 
 public slots:
     void aboutToBeDestroyed();
     void tilesetChanged(Tiled::Tileset *tileset);
 
 private:
+    bool allocateAtlasRect(TilesetTexturesPerContext *contextTextures, const QSize &size,
+                           int &page, QRect &rect);
+
     QMap<QOpenGLContext*,TilesetTexturesPerContext*> mContextToTextures;
     bool mConnected = false;
 };
@@ -773,6 +807,11 @@ struct VBOTile
     Tiled::Tile::UVST mAtlasUVST;
     TilesetTexture *mTexture = nullptr;
     bool mInvisible = false;
+    int mAtlasPage = TILE_ATLAS_UNRESOLVED_PAGE;
+    float mU0 = 0;
+    float mV0 = 0;
+    float mU1 = 0;
+    float mV1 = 0;
 };
 
 const int VBO_SQUARES = 10 * 3;
@@ -781,16 +820,12 @@ const int VBO_PER_CELL = 300 / VBO_SQUARES;
 struct VBOTiles
 {
     VBOTiles()
-        : mIndexBuffer(QOpenGLBuffer::Type::IndexBuffer)
-        , mVertexBuffer(QOpenGLBuffer::Type::VertexBuffer)
     {
         mTileFirst.fill(-1);
         mTileCount.fill(0);
     }
 
-    QOpenGLBuffer mIndexBuffer;
-    QOpenGLBuffer mVertexBuffer;
-
+    quint64 mAtlasGeneration = 0;
     bool mCreated = false;
     bool mGathered = false;
     QRect mBounds;
@@ -814,7 +849,8 @@ public:
     int tryAddExtraJumbo_Trunk(const Tiled::Tile *tile, const QPointF &screenPos, int tileWidth, QList<VBOTile> &tiles);
     int tryAddExtraJumbo_Leaves(const Tiled::Tile *tile, const QPointF &screenPos, int tileWidth, QList<VBOTile> &tiles);
     VBOTiles *getTilesFor(const QPoint& square, bool bCreate);
-    void getSquaresInRect(Tiled::MapRenderer *renderer, const QRectF &exposedRect, QList<QPoint>& out);
+    void getSquaresInRect(Tiled::MapRenderer *renderer, const QRectF &exposedRect, QVector<QPoint>& out);
+    void resolveAtlasTile(VBOTile &tile, int pageSize);
     bool isEmpty() const;
 
 public slots:
@@ -848,6 +884,10 @@ public:
     QRect mBounds;
     QOpenGLShaderProgram mShaderProgram;
     std::array<LayerGroupVBO*,MAX_WORLD_LEVELS> mLayerVBOs;
+    QOpenGLBuffer mStreamBuffer{QOpenGLBuffer::VertexBuffer};
+    QOpenGLBuffer mQuadIndexBuffer{QOpenGLBuffer::IndexBuffer};
+    std::vector<float> mStreamVertices;
+    QVector<QPoint> mSquares;
 
 private:
     MapComposite *mPaintSource = nullptr;

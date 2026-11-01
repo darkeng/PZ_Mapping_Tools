@@ -85,6 +85,11 @@
 #include <QTemporaryDir>
 #include <QUrl>
 #include <QUndoStack>
+#include <QVarLengthArray>
+
+#include <cstring>
+#include <iterator>
+#include <limits>
 
 using namespace Tiled;
 
@@ -593,6 +598,9 @@ TilesetTexturesPerContext::~TilesetTexturesPerContext()
                 }
 #endif
             }
+            if (!mAtlasPages.isEmpty()) {
+                functions->glDeleteTextures(mAtlasPages.size(), mAtlasPages.constData());
+            }
         } else {
             qDebug() << "~TilesetTexturesPerContext() failed to set OpenGL context";
         }
@@ -606,25 +614,8 @@ TilesetTexturesPerContext::~TilesetTexturesPerContext()
 
 TilesetTexture *TilesetTextures::get(const QString& tilesetName, const QList<Tiled::Tileset*> &tilesets)
 {
-    if (false) return nullptr;
-
-    if (mConnected == false) {
-        mConnected = true;
-        connect(Tiled::Internal::TilesetManager::instance(), &Internal::TilesetManager::tilesetChanged, this, &TilesetTextures::tilesetChanged);
-    }
-
-    QOpenGLContext *context = QOpenGLContext::currentContext();
-    if (context->shareContext() != nullptr)
-        context = context->shareContext();
-
-    TilesetTexturesPerContext *contextTextures = mContextToTextures[context];
-    if (contextTextures == nullptr) {
-        qDebug() << "TilesetTextures::get() added context" << context;
-        contextTextures = new TilesetTexturesPerContext();
-        contextTextures->mContext = context;
-        mContextToTextures[context] = contextTextures;
-        connect(context, &QOpenGLContext::aboutToBeDestroyed, this, &TilesetTextures::aboutToBeDestroyed);
-    }
+    TilesetTexturesPerContext *contextTextures = currentContextTextures();
+    QOpenGLContext *context = contextTextures->mContext;
 
 //    if (QSurface *surface = context->surface()) {
 //        qDebug() << surface->format() << "r=" << surface->format().redBufferSize() << "g=" << surface->format().greenBufferSize() << "b=" << surface->format().blueBufferSize();
@@ -754,6 +745,166 @@ Tileset *TilesetTextures::findTileset(const QString &tilesetName, const QList<Ti
     return nullptr;
 }
 
+TilesetTexturesPerContext *TilesetTextures::currentContextTextures()
+{
+    if (mConnected == false) {
+        mConnected = true;
+        connect(Tiled::Internal::TilesetManager::instance(), &Internal::TilesetManager::tilesetChanged, this, &TilesetTextures::tilesetChanged);
+    }
+
+    QOpenGLContext *context = QOpenGLContext::currentContext();
+    if (context->shareContext() != nullptr)
+        context = context->shareContext();
+
+    TilesetTexturesPerContext *contextTextures = mContextToTextures[context];
+    if (contextTextures == nullptr) {
+        qDebug() << "TilesetTextures::get() added context" << context;
+        contextTextures = new TilesetTexturesPerContext();
+        contextTextures->mContext = context;
+        mContextToTextures[context] = contextTextures;
+        connect(context, &QOpenGLContext::aboutToBeDestroyed, this, &TilesetTextures::aboutToBeDestroyed);
+    }
+    return contextTextures;
+}
+
+const TilesetAtlasPlacement *TilesetTextures::atlasPlacement(const QString &tilesetName, const QList<Tileset *> &tilesets)
+{
+    static quint64 atlasGenerations = 0;
+    TilesetTexturesPerContext *contextTextures = currentContextTextures();
+    QOpenGLFunctions *functions = QOpenGLContext::currentContext()->functions();
+    if (contextTextures->mAtlasGeneration == 0) {
+        contextTextures->mAtlasGeneration = ++atlasGenerations;
+        GLint maxTextureSize = 0;
+        GLint maxTextureUnits = 0;
+        functions->glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize);
+        functions->glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxTextureUnits);
+        contextTextures->mAtlasPageSize = qMin(4096, int(maxTextureSize));
+        contextTextures->mAtlasMaxPages = qMin(int(maxTextureUnits), TILE_ATLAS_SAMPLER_COUNT) - 1;
+    }
+
+    const bool changed = contextTextures->mAtlasChanged.remove(tilesetName);
+    auto existing = contextTextures->mAtlasPlacements.find(tilesetName);
+    if (!changed) {
+        if (existing != contextTextures->mAtlasPlacements.end())
+            return &existing.value();
+        if (contextTextures->mAtlasUnavailable.contains(tilesetName))
+            return nullptr;
+    }
+    contextTextures->mAtlasUnavailable.remove(tilesetName);
+
+    Tileset *tileset = findTileset(tilesetName, tilesets);
+    if (tileset == nullptr) {
+        contextTextures->mAtlasPlacements.remove(tilesetName);
+        contextTextures->mAtlasUnavailable += tilesetName;
+        return nullptr;
+    }
+    const QImage image = tileset->image().convertToFormat(QImage::Format_RGBA8888);
+    const QSize paddedSize = image.size() + QSize(2, 2);
+
+    int page = -1;
+    QRect paddedRect;
+    existing = contextTextures->mAtlasPlacements.find(tilesetName);
+    if (existing != contextTextures->mAtlasPlacements.end()
+            && existing->mRect.size() == image.size()) {
+        page = existing->mPage;
+        paddedRect = existing->mRect.adjusted(-1, -1, 1, 1);
+    } else if (!allocateAtlasRect(contextTextures, paddedSize, page, paddedRect)) {
+        contextTextures->mAtlasPlacements.remove(tilesetName);
+        contextTextures->mAtlasUnavailable += tilesetName;
+        return nullptr;
+    }
+
+    QImage padded(paddedSize, QImage::Format_RGBA8888);
+    padded.fill(0);
+    for (int row = 0; row < image.height(); ++row) {
+        memcpy(padded.scanLine(row + 1) + 4, image.constScanLine(row),
+               size_t(image.width()) * 4);
+    }
+    functions->glActiveTexture(GL_TEXTURE0);
+    functions->glBindTexture(GL_TEXTURE_2D, contextTextures->mAtlasPages[page]);
+    functions->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    functions->glTexSubImage2D(GL_TEXTURE_2D, 0, paddedRect.x(), paddedRect.y(),
+                               padded.width(), padded.height(), GL_RGBA, GL_UNSIGNED_BYTE,
+                               padded.constBits());
+    functions->glBindTexture(GL_TEXTURE_2D, 0);
+    tileset->releaseImage();
+
+    TilesetAtlasPlacement &placement = contextTextures->mAtlasPlacements[tilesetName];
+    placement.mPage = page;
+    placement.mRect = paddedRect.adjusted(1, 1, -1, -1);
+    return &placement;
+}
+bool TilesetTextures::allocateAtlasRect(TilesetTexturesPerContext *contextTextures,
+                                        const QSize &size, int &page, QRect &rect)
+{
+    const int pageSize = contextTextures->mAtlasPageSize;
+    if (size.width() > pageSize || size.height() > pageSize)
+        return false;
+
+    auto &shelves = contextTextures->mAtlasShelves;
+    auto placeOnShelf = [&](TilesetTexturesPerContext::AtlasShelf &shelf) {
+        page = shelf.mPage;
+        rect = QRect(QPoint(shelf.mX, shelf.mY), size);
+        shelf.mX += size.width();
+        return true;
+    };
+
+    int bestShelfIndex = -1;
+    int bestShelfWaste = std::numeric_limits<int>::max();
+    for (int shelfIndex = 0; shelfIndex < shelves.size(); ++shelfIndex) {
+        const auto &shelf = shelves[shelfIndex];
+        if (shelf.mHeight < size.height() || shelf.mX + size.width() > pageSize)
+            continue;
+        const int waste = shelf.mHeight - size.height();
+        if (waste < bestShelfWaste) {
+            bestShelfIndex = shelfIndex;
+            bestShelfWaste = waste;
+        }
+    }
+    if (bestShelfIndex >= 0 && bestShelfWaste <= qMax(32, size.height() / 4))
+        return placeOnShelf(shelves[bestShelfIndex]);
+
+    auto &usedHeights = contextTextures->mAtlasPageUsedHeight;
+    for (int pageIndex = 0; pageIndex < usedHeights.size(); ++pageIndex) {
+        if (usedHeights[pageIndex] + size.height() <= pageSize) {
+            shelves.append({pageIndex, 0, usedHeights[pageIndex], size.height()});
+            usedHeights[pageIndex] += size.height();
+            return placeOnShelf(shelves.last());
+        }
+    }
+    if (bestShelfIndex >= 0)
+        return placeOnShelf(shelves[bestShelfIndex]);
+    if (contextTextures->mAtlasPages.size() >= contextTextures->mAtlasMaxPages)
+        return false;
+
+    QOpenGLFunctions *functions = QOpenGLContext::currentContext()->functions();
+    while (functions->glGetError() != GL_NO_ERROR) {
+    }
+    GLuint textureId = 0;
+    functions->glGenTextures(1, &textureId);
+    if (textureId == 0)
+        return false;
+    functions->glActiveTexture(GL_TEXTURE0);
+    functions->glBindTexture(GL_TEXTURE_2D, textureId);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    functions->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pageSize, pageSize, 0,
+                            GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    functions->glBindTexture(GL_TEXTURE_2D, 0);
+    if (functions->glGetError() != GL_NO_ERROR) {
+        functions->glDeleteTextures(1, &textureId);
+        contextTextures->mAtlasMaxPages = contextTextures->mAtlasPages.size();
+        return false;
+    }
+    const int newPage = contextTextures->mAtlasPages.size();
+    contextTextures->mAtlasPages += textureId;
+    usedHeights += size.height();
+    shelves.append({newPage, 0, 0, size.height()});
+    return placeOnShelf(shelves.last());
+}
+
 void TilesetTextures::aboutToBeDestroyed()
 {
     QObject *sender = this->sender();
@@ -772,6 +923,7 @@ void TilesetTextures::tilesetChanged(Tileset *tileset)
     qDebug() << "TilesetTextures CHANGED" << tileset->name();
     for (TilesetTexturesPerContext *contextTextures : std::as_const(mContextToTextures)) {
         contextTextures->mChanged[tileset->name()] = tileset->changeCount();
+        contextTextures->mAtlasChanged.insert(tileset->name());
     }
 }
 
@@ -876,23 +1028,52 @@ void LayerGroupVBO::paint(QPainter *painter, Tiled::MapRenderer *renderer,
 #version 330 core
 layout(location = 0) in vec2 vertexPosition;
 layout(location = 1) in vec2 vertexTexCoord;
+layout(location = 2) in float vertexPage;
+layout(location = 3) in float vertexAlpha;
 out vec2 texCoord;
+flat out int texPage;
+flat out float texAlpha;
 uniform mat4 mvpMatrix;
 void main()
 {
     gl_Position = mvpMatrix * vec4(vertexPosition, 0.0, 1.0);
     texCoord = vertexTexCoord;
+    texPage = int(vertexPage + 0.5);
+    texAlpha = vertexAlpha;
 }
 )";
         const char *fragmentShader = R"(
 #version 330 core
 in vec2 texCoord;
+flat in int texPage;
+flat in float texAlpha;
 out vec4 fragColor;
-uniform sampler2D textureSampler;
-uniform vec4 color;
+uniform sampler2D pages[16];
+vec4 pageTexel(vec2 uv)
+{
+    switch (texPage) {
+    case 0: return textureLod(pages[0], uv, 0.0);
+    case 1: return textureLod(pages[1], uv, 0.0);
+    case 2: return textureLod(pages[2], uv, 0.0);
+    case 3: return textureLod(pages[3], uv, 0.0);
+    case 4: return textureLod(pages[4], uv, 0.0);
+    case 5: return textureLod(pages[5], uv, 0.0);
+    case 6: return textureLod(pages[6], uv, 0.0);
+    case 7: return textureLod(pages[7], uv, 0.0);
+    case 8: return textureLod(pages[8], uv, 0.0);
+    case 9: return textureLod(pages[9], uv, 0.0);
+    case 10: return textureLod(pages[10], uv, 0.0);
+    case 11: return textureLod(pages[11], uv, 0.0);
+    case 12: return textureLod(pages[12], uv, 0.0);
+    case 13: return textureLod(pages[13], uv, 0.0);
+    case 14: return textureLod(pages[14], uv, 0.0);
+    case 15: return textureLod(pages[15], uv, 0.0);
+    }
+    return vec4(0.0);
+}
 void main()
 {
-    fragColor = texture(textureSampler, texCoord) * color;
+    fragColor = pageTexel(texCoord) * vec4(1.0, 1.0, 1.0, texAlpha);
 }
 )";
         if (!shaderProgram.addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShader)
@@ -923,9 +1104,6 @@ void LayerGroupVBO::paint2(QPainter *painter, Tiled::MapRenderer *renderer,
 {
     const bool countRenderedTiles =
             ZLevelRenderer::isRenderedTileCountingEnabled();
-//    QOpenGLContext *context = QOpenGLContext::currentContext();
-//    if (context->shareContext() != nullptr)
-//        context = context->shareContext();
 
     MapComposite *mapComposite = mMapCompositeVBO->mMapComposite/*mLayerGroup->owner()*/;
     if (mapComposite->changeCount() != mChangeCount) {
@@ -953,77 +1131,14 @@ void LayerGroupVBO::paint2(QPainter *painter, Tiled::MapRenderer *renderer,
     }
 
     for (VBOTiles *vboTiles : qAsConst(exposedTiles)) {
-        if (vboTiles->mGathered == false)
-            continue;
-        if (vboTiles->mCreated)
-            continue;
-        vboTiles->mCreated = true;
-        const QList<VBOTile>& tiles = vboTiles->mTiles;
-        if (tiles.isEmpty()) {
-            continue;
-        }
-        if (vboTiles->mIndexBuffer.isCreated() == false) {
-            if (vboTiles->mIndexBuffer.create() == false) Q_ASSERT(false);
-            vboTiles->mIndexBuffer.setUsagePattern(QOpenGLBuffer::StaticDraw);
-        }
-        if (vboTiles->mIndexBuffer.bind() == false) Q_ASSERT(false);
-        GLuint *indices = new GLuint[tiles.size() * 4];
-        for (int i = 0; i < tiles.size() * 4; i++) {
-            indices[i] = i;
-        }
-        vboTiles->mIndexBuffer.allocate(indices, tiles.size() * 4 * sizeof(GLuint));
-        delete[] indices;
-
-        if (vboTiles->mVertexBuffer.isCreated() == false) {
-            if (vboTiles->mVertexBuffer.create() == false) Q_ASSERT(false);
-            vboTiles->mVertexBuffer.setUsagePattern(QOpenGLBuffer::StaticDraw);
-        }
-        if (vboTiles->mVertexBuffer.bind() == false) Q_ASSERT(false);
-        // x, y, u, v
-        GLfloat *vertices = new GLfloat[tiles.size() * 4 * 4];
-        for (int i = 0; i < tiles.size(); i++) {
-            const auto& tile = tiles[i];
-            int n = i * 4 * 4;
-            const QRect& bounds = tile.mRect;
-            const Tile::UVST uvst = tile.mAtlasUVST;
-            float u0 = uvst.u;
-            float v0 = uvst.v;
-            float u1 = uvst.s;
-            float v1 = uvst.t;
-
-            vertices[n++] = bounds.x();
-            vertices[n++] = bounds.y();
-            vertices[n++] = u0;
-            vertices[n++] = v0;
-            vertices[n++] = bounds.right() + 1;
-            vertices[n++] = bounds.y();
-            vertices[n++] = u1;
-            vertices[n++] = v0;
-
-            vertices[n++] = bounds.right() + 1;
-            vertices[n++] = bounds.bottom() + 1;
-            vertices[n++] = u1;
-            vertices[n++] = v1;
-
-            vertices[n++] = bounds.left();
-            vertices[n++] = bounds.bottom() + 1;
-            vertices[n++] = u0;
-            vertices[n++] = v1;
-        }
-        vboTiles->mVertexBuffer.allocate(vertices, tiles.size() * 4 * 4 * sizeof(GL_FLOAT));
-        delete[] vertices;
-
-        vboTiles->mVertexBuffer.release();
-        vboTiles->mIndexBuffer.release();
-
+        if (vboTiles->mGathered)
+            vboTiles->mCreated = true;
     }
 
     if (isEmpty()) {
         return;
     }
 
-#define PZ_OPENGL_WIDGET 1
-#if PZ_OPENGL_WIDGET
     QOpenGLWidget *openGLWidget = qobject_cast<QOpenGLWidget*>(view);
     if (openGLWidget == nullptr) {
         qWarning() << "WorldEd cell renderer: expected a QOpenGLWidget viewport";
@@ -1039,216 +1154,239 @@ void LayerGroupVBO::paint2(QPainter *painter, Tiled::MapRenderer *renderer,
     modelView.translate(xfrm.m31() * devicePixelRatio,
                         xfrm.m32() * devicePixelRatio, 0.0f);
     modelView.scale(xfrm.m11(), xfrm.m22(), 1.0f);
+    QMatrix4x4 sceneTransform;
+    sceneTransform.scale(devicePixelRatio);
+
+    TilesetTexturesPerContext *atlas = TILESET_TEXTURES.currentContextTextures();
+
+    const int layerCount = mLayerGroup->layers().size();
+    QVarLengthArray<bool, 100> visibleLayers(layerCount);
+    QVarLengthArray<float, 100> layerOpacity(layerCount);
+    QVarLengthArray<bool, 100> hiddenByLotFloorsOnly(layerCount);
+    for (int layerIndex = 0; layerIndex < layerCount; layerIndex++) {
+        TileLayer *tileLayer = mLayerGroup->layers()[layerIndex];
+        // FIXME: submaps also
+        visibleLayers[layerIndex] = mLayerGroup->isLayerVisible(tileLayer);
+        layerOpacity[layerIndex] = mLayerGroup->layerOpacity(tileLayer);
+        hiddenByLotFloorsOnly[layerIndex] = (tileLayer != nullptr)
+                && (mLayerGroup->level() != 0 || tileLayer->name() != QStringLiteral("Floor"));
+    }
+
+    MapComposite *ownerComposite = mLayerGroup->owner();
+    QRegion suppressRgn;
+    if (ownerComposite->levelRecursive() + mLayerGroup->level() == ownerComposite->root()->suppressLevel())
+        suppressRgn = ownerComposite->root()->suppressRegion();
+    const bool showLotFloorsOnly = ownerComposite->root()->showLotFloorsOnly();
+    const bool bShowInvisibleTiles = Preferences::instance()->showInvisibleTiles();
+
+    QVector<QPoint> &squares = mMapCompositeVBO->mSquares;
+    squares.resize(0);
+    getSquaresInRect(renderer, exposedRect, squares);
+
+    struct Batch
+    {
+        int mFirstQuad;
+        int mQuadCount;
+        GLuint mFallbackTexture;
+    };
+    QVarLengthArray<Batch, 8> batches;
+    GLuint batchFallbackTexture = 0;
+    int batchFirstQuad = 0;
+    int quadCount = 0;
+    const int floatsPerVertex = 6;
+    std::vector<float> &vertices = mMapCompositeVBO->mStreamVertices;
+    vertices.clear();
+
+    VBOTiles *currentTiles = nullptr;
+    QPointF screenOrigin;
+    for (const QPoint& square : std::as_const(squares)) {
+        VBOTiles *vboTiles = (currentTiles != nullptr && currentTiles->mBounds.contains(square)) ? currentTiles : getTilesFor(square, false);
+        if (vboTiles == nullptr)
+            continue;
+        if (vboTiles->mCreated == false)
+            continue;
+        QList<VBOTile>& tiles = vboTiles->mTiles;
+        if (tiles.isEmpty())
+            continue;
+        if (currentTiles != vboTiles) {
+            currentTiles = vboTiles;
+            screenOrigin = renderer->tileToPixelCoords(
+                        vboTiles->mBounds.topLeft() + QPointF(0.5f, 1.5f),
+                        mLayerGroup->level());
+            if (vboTiles->mAtlasGeneration != atlas->mAtlasGeneration) {
+                vboTiles->mAtlasGeneration = atlas->mAtlasGeneration;
+                for (VBOTile &tile : tiles)
+                    tile.mAtlasPage = TILE_ATLAS_UNRESOLVED_PAGE;
+            }
+        }
+        const int squareX = square.x() - vboTiles->mBounds.x();
+        const int squareY = square.y() - vboTiles->mBounds.y();
+        const int firstTile = vboTiles->mTileFirst[squareX + squareY * VBO_SQUARES];
+        if (firstTile == -1)
+            continue;
+        const int tileCount = vboTiles->mTileCount[squareX + squareY * VBO_SQUARES];
+        const bool squareSuppressed = !suppressRgn.isEmpty() && suppressRgn.contains(square);
+        for (int tileIndex = firstTile, tileEnd = firstTile + tileCount; tileIndex < tileEnd; tileIndex++) {
+            auto& tile = tiles[tileIndex];
+            if (tile.mLayerIndex > 0 && squareSuppressed) {
+                // This square is outside the "Highlight Room Under Pointer" room.
+                // Show only the Floor layer.
+                continue;
+            }
+            if ((tile.mHideIfVisible != nullptr) && isLotVisible(tile.mHideIfVisible))
+                continue;
+            if ((tile.mSubMap != nullptr) && (isLotVisible(tile.mSubMap) == false))
+                continue;
+            if (tile.mInvisible && (bShowInvisibleTiles == false))
+                continue;
+            float opacity = 1.0f;
+            if ((tile.mLayerIndex >= 0) && (tile.mLayerIndex < layerCount)) {
+                if (visibleLayers[tile.mLayerIndex] == false)
+                    continue;
+                if ((tile.mSubMap != nullptr) && showLotFloorsOnly
+                        && hiddenByLotFloorsOnly[tile.mLayerIndex]) {
+                    continue;
+                }
+                opacity = layerOpacity[tile.mLayerIndex];
+            }
+            if (tile.mAtlasPage == TILE_ATLAS_UNRESOLVED_PAGE) {
+                resolveAtlasTile(tile, atlas->mAtlasPageSize);
+                if (tile.mAtlasPage == TILE_ATLAS_UNRESOLVED_PAGE)
+                    continue;
+            }
+            float page = float(tile.mAtlasPage);
+            if (tile.mAtlasPage == TILE_ATLAS_FALLBACK_PAGE) {
+                const GLuint fallbackTexture = GLuint(tile.mTexture->mID);
+                if (fallbackTexture != batchFallbackTexture) {
+                    if (batchFallbackTexture != 0) {
+                        batches.append({batchFirstQuad, quadCount - batchFirstQuad, batchFallbackTexture});
+                        batchFirstQuad = quadCount;
+                    }
+                    batchFallbackTexture = fallbackTexture;
+                }
+                page = float(TILE_ATLAS_FALLBACK_UNIT);
+            }
+            const QRect& bounds = tile.mRect;
+            const float left = float(screenOrigin.x() + bounds.x());
+            const float top = float(screenOrigin.y() + bounds.y());
+            const float right = float(screenOrigin.x() + bounds.right() + 1);
+            const float bottom = float(screenOrigin.y() + bounds.bottom() + 1);
+            const float quadVertices[4 * floatsPerVertex] = {
+                left, top, tile.mU0, tile.mV0, page, opacity,
+                right, top, tile.mU1, tile.mV0, page, opacity,
+                right, bottom, tile.mU1, tile.mV1, page, opacity,
+                left, bottom, tile.mU0, tile.mV1, page, opacity,
+            };
+            vertices.insert(vertices.end(), std::begin(quadVertices), std::end(quadVertices));
+            ++quadCount;
+            if (countRenderedTiles)
+                ZLevelRenderer::addRenderedTileCount();
+        }
+    }
+
+    if (quadCount == 0)
+        return;
+    batches.append({batchFirstQuad, quadCount - batchFirstQuad, batchFallbackTexture});
+
+    const int maxQuadsPerDraw = 16384;
+    QOpenGLBuffer &indexBuffer = mMapCompositeVBO->mQuadIndexBuffer;
+    if (indexBuffer.isCreated() == false) {
+        if (indexBuffer.create() == false) {
+            qWarning() << "WorldEd cell renderer: failed to create the quad index buffer";
+            return;
+        }
+        indexBuffer.setUsagePattern(QOpenGLBuffer::StaticDraw);
+        indexBuffer.bind();
+        std::vector<GLuint> indices(size_t(maxQuadsPerDraw) * 6);
+        for (int quad = 0; quad < maxQuadsPerDraw; ++quad) {
+            const GLuint firstVertex = GLuint(quad * 4);
+            GLuint *quadIndices = &indices[size_t(quad) * 6];
+            quadIndices[0] = firstVertex;
+            quadIndices[1] = firstVertex + 1;
+            quadIndices[2] = firstVertex + 2;
+            quadIndices[3] = firstVertex;
+            quadIndices[4] = firstVertex + 2;
+            quadIndices[5] = firstVertex + 3;
+        }
+        indexBuffer.allocate(indices.data(), int(indices.size() * sizeof(GLuint)));
+    } else {
+        indexBuffer.bind();
+    }
+
+    QOpenGLBuffer &streamBuffer = mMapCompositeVBO->mStreamBuffer;
+    if (streamBuffer.isCreated() == false) {
+        if (streamBuffer.create() == false) {
+            qWarning() << "WorldEd cell renderer: failed to create the tile vertex buffer";
+            indexBuffer.release();
+            return;
+        }
+        streamBuffer.setUsagePattern(QOpenGLBuffer::StreamDraw);
+    }
+    streamBuffer.bind();
+    streamBuffer.allocate(vertices.data(), int(vertices.size() * sizeof(float)));
+
     QOpenGLShaderProgram& shaderProgram = mMapCompositeVBO->mShaderProgram;
     if (!shaderProgram.bind()) {
         qWarning() << "WorldEd cell renderer: failed to bind shader:"
                    << shaderProgram.log();
+        streamBuffer.release();
+        indexBuffer.release();
         return;
     }
-    shaderProgram.setUniformValue("mvpMatrix", projection * modelView);
-    shaderProgram.setUniformValue("textureSampler", 0);
-    shaderProgram.setUniformValue("color", QVector4D(1.f, 1.f, 1.f, 1.f));
+    shaderProgram.setUniformValue("mvpMatrix", projection * modelView * sceneTransform);
+    GLint samplerUnits[TILE_ATLAS_SAMPLER_COUNT];
+    for (int unit = 0; unit < TILE_ATLAS_SAMPLER_COUNT; ++unit)
+        samplerUnits[unit] = unit;
+    shaderProgram.setUniformValueArray("pages", samplerUnits, TILE_ATLAS_SAMPLER_COUNT);
     const int posAttr = shaderProgram.attributeLocation("vertexPosition");
     const int texAttr = shaderProgram.attributeLocation("vertexTexCoord");
+    const int pageAttr = shaderProgram.attributeLocation("vertexPage");
+    const int alphaAttr = shaderProgram.attributeLocation("vertexAlpha");
+    const int strideBytes = floatsPerVertex * sizeof(float);
     shaderProgram.enableAttributeArray(posAttr);
     shaderProgram.enableAttributeArray(texAttr);
-    const int strideBytes = 4 * sizeof(float);
-    const int posOffsetBytes = 0;
-    const int texOffsetBytes = 2 * sizeof(float);
-#endif
+    shaderProgram.enableAttributeArray(pageAttr);
+    shaderProgram.enableAttributeArray(alphaAttr);
+    shaderProgram.setAttributeBuffer(posAttr, GL_FLOAT, 0, 2, strideBytes);
+    shaderProgram.setAttributeBuffer(texAttr, GL_FLOAT, 2 * sizeof(float), 2, strideBytes);
+    shaderProgram.setAttributeBuffer(pageAttr, GL_FLOAT, 4 * sizeof(float), 1, strideBytes);
+    shaderProgram.setAttributeBuffer(alphaAttr, GL_FLOAT, 5 * sizeof(float), 1, strideBytes);
 
-    glActiveTexture(GL_TEXTURE2);
-    glActiveTexture(GL_TEXTURE1);
-    glActiveTexture(GL_TEXTURE0);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
-    bool wireframe = false;
-    if (wireframe) {
-        glLineWidth(1.0f);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    }
-
     glDisable(GL_DEPTH_TEST);
-
     glEnable(GL_BLEND);
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
                         GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
-    GLuint textureID = 0;
-
-    bool visibleLayers[100];
-    qreal layerOpacity[100];
-    int layerCount = mLayerGroup->layers().size();
-    for (int i = 0; i < layerCount; i++) {
-        TileLayer *tl = mLayerGroup->layers()[i];
-        // FIXME: submaps also
-        visibleLayers[i] = mLayerGroup->isLayerVisible(tl);
-        layerOpacity[i] = mLayerGroup->layerOpacity(tl);
+    const int pageCount = atlas->mAtlasPages.size();
+    for (int pageIndex = 0; pageIndex < pageCount; ++pageIndex) {
+        glActiveTexture(GL_TEXTURE0 + pageIndex);
+        glBindTexture(GL_TEXTURE_2D, atlas->mAtlasPages[pageIndex]);
     }
-
-    bool drawAll = false;
-    if (drawAll) {
-        {
-            for (VBOTiles *vboTiles : mTiles) {
-                if (vboTiles == nullptr)
-                    continue;
-                if (vboTiles->mCreated == false)
-                    continue;
-                QList<VBOTile>& tiles = vboTiles->mTiles;
-                if (tiles.isEmpty())
-                    continue;
-                if (vboTiles->mIndexBuffer.bind() == false) Q_ASSERT(false);
-                if (vboTiles->mVertexBuffer.bind() == false) Q_ASSERT(false);
-                shaderProgram.setAttributeBuffer(posAttr, GL_FLOAT, posOffsetBytes, 2, strideBytes);
-                shaderProgram.setAttributeBuffer(texAttr, GL_FLOAT, texOffsetBytes, 2, strideBytes);
-                for (int i = 0; i < tiles.size(); i++) {
-                    GLuint start = i * 4;
-                    GLuint end = start + 4 - 1;
-                    GLuint count = 4;
-                    if (tiles[i].mTexture == nullptr) {
-                        tiles[i].mTexture = TILESET_TEXTURES.get(tiles[i].mTilesetName, mMapCompositeVBO->usedTilesets());
-                    }
-#if TILESET_TEXTURE_GL == 0
-                    if (tiles[i].mTexture == nullptr || tiles[i].mTexture->mID == -1)
-                        continue;
-                    if (textureID != tiles[i].mTexture->mID) {
-                        glBindTexture(GL_TEXTURE_2D, tiles[i].mTexture->mID);
-                        textureID = tiles[i].mTexture->mID;
-                    }
-                    glDrawRangeElements(GL_TRIANGLE_FAN, start, end, count, GL_UNSIGNED_INT, (void*)(start * sizeof(GLuint)));
-#else
-                    if (tiles[i].mTexture == nullptr || tiles[i].mTexture->mTexture->isCreated() == false)
-                        continue;
-                    tiles[i].mTexture->mTexture->bind();
-                    glDrawRangeElements(GL_TRIANGLE_FAN, start, end, count, GL_UNSIGNED_INT, (void*)(start * sizeof(GLuint)));
-#endif
-                    if (countRenderedTiles)
-                        ZLevelRenderer::addRenderedTileCount();
-                }
-                vboTiles->mVertexBuffer.release();
-                vboTiles->mIndexBuffer.release();
-            }
-        }
-    } else {
-        qreal opacity = 1.0f;
-        shaderProgram.setUniformValue("color", QVector4D(1.f, 1.f, 1.f, opacity));
-
-        MapComposite *mapComposite = mLayerGroup->owner();
-        QRegion suppressRgn;
-        if (mapComposite->levelRecursive() + mLayerGroup->level() == mapComposite->root()->suppressLevel())
-            suppressRgn = mapComposite->root()->suppressRegion();
-
-        QList<QPoint> squares;
-        getSquaresInRect(renderer, exposedRect, squares);
-        bool bShowInvisibleTiles = Preferences::instance()->showInvisibleTiles();
-        {
-            VBOTiles *currentTiles = nullptr;
-            for (const QPoint& square : std::as_const(squares)) {
-                VBOTiles *vboTiles = (currentTiles != nullptr && currentTiles->mBounds.contains(square)) ? currentTiles : getTilesFor(square, false);
-                if (vboTiles == nullptr)
-                    continue;
-                if (vboTiles->mCreated == false)
-                    continue;
-                QList<VBOTile>& tiles = vboTiles->mTiles;
-                if (tiles.isEmpty())
-                    continue;
-                if (currentTiles != vboTiles) {
-                    currentTiles = vboTiles;
-                    if (vboTiles->mIndexBuffer.bind() == false) Q_ASSERT(false);
-                    if (vboTiles->mVertexBuffer.bind() == false) Q_ASSERT(false);
-                    shaderProgram.setAttributeBuffer(posAttr, GL_FLOAT, posOffsetBytes, 2, strideBytes);
-                    shaderProgram.setAttributeBuffer(texAttr, GL_FLOAT, texOffsetBytes, 2, strideBytes);
-                    QPointF screenOrigin = renderer->tileToPixelCoords(
-                                vboTiles->mBounds.topLeft() + QPointF(0.5f, 1.5f),
-                                mLayerGroup->level());
-                    QMatrix4x4 localTransform;
-                    localTransform.translate(screenOrigin.x() * devicePixelRatio,
-                                             screenOrigin.y() * devicePixelRatio,
-                                             0.0f);
-                    localTransform.scale(devicePixelRatio);
-                    shaderProgram.setUniformValue("mvpMatrix",
-                                                  projection * modelView * localTransform);
-                }
-                auto& tileFirst = vboTiles->mTileFirst;
-                auto& tileCount = vboTiles->mTileCount;
-                {
-                    if (vboTiles->mBounds.contains(square.x(), square.y()) == false)
-                        continue;
-                    int x = square.x() - vboTiles->mBounds.x();
-                    int y = square.y() - vboTiles->mBounds.y();
-                    const int tFirst = tileFirst[x + y * VBO_SQUARES];
-                    if (tFirst == -1)
-                        continue;
-                    const int tCount = tileCount[x+y*VBO_SQUARES];
-                    for (int i = tFirst, n = i + tCount; i < n; i++) {
-                        auto& tile = tiles[i];
-                        if (tile.mLayerIndex > 0 && suppressRgn.contains(square)) {
-                            // This square is outside the "Highlight Room Under Pointer" room.
-                            // Show only the Floor layer.
-                            continue;
-                        }
-                        GLuint start = i * 4;
-                        GLuint end = start + 4 - 1;
-                        GLuint count = 4;
-                        if ((tile.mHideIfVisible != nullptr) && isLotVisible(tile.mHideIfVisible))
-                            continue;
-                        if ((tile.mSubMap != nullptr) && (isLotVisible(tile.mSubMap) == false))
-                            continue;
-                        if (tile.mInvisible && (bShowInvisibleTiles == false))
-                            continue;
-                        if ((tile.mLayerIndex >= 0) && (tile.mLayerIndex < layerCount)) {
-                            if (visibleLayers[tile.mLayerIndex] == false)
-                                continue;
-                            if ((tile.mSubMap != nullptr) && mapComposite->root()->showLotFloorsOnly()) {
-                                TileLayer *layer = mLayerGroup->layers().at(tile.mLayerIndex);
-                                if ((layer != nullptr) && (mLayerGroup->level() != 0 || layer->name() != QStringLiteral("Floor"))) {
-                                    continue;
-                                }
-                            }
-                            if (opacity != layerOpacity[tile.mLayerIndex]) {
-                                opacity = layerOpacity[tile.mLayerIndex];
-                                shaderProgram.setUniformValue("color", QVector4D(1.f, 1.f, 1.f, opacity));
-                            }
-                        } else {
-                            if (opacity != 1.0) {
-                                opacity = 1.0;
-                                shaderProgram.setUniformValue("color", QVector4D(1.f, 1.f, 1.f, opacity));
-                            }
-                        }
-                        if (tile.mTexture == nullptr) {
-                            tile.mTexture = TILESET_TEXTURES.get(tile.mTilesetName, mMapCompositeVBO->usedTilesets());
-                        }
-#if TILESET_TEXTURE_GL == 0
-                        if (tile.mTexture == nullptr || tile.mTexture->mID == -1)
-                            continue;
-                        if (textureID != tile.mTexture->mID) {
-                            glBindTexture(GL_TEXTURE_2D, tile.mTexture->mID);
-                            textureID = tile.mTexture->mID;
-                        }
-                        glDrawRangeElements(GL_TRIANGLE_FAN, start, end, count, GL_UNSIGNED_INT, (void*)(start * sizeof(GLuint)));
-                        Q_ASSERT(glGetError() == 0);
-#else
-                        if (tile.mTexture == nullptr || tile.mTexture->mTexture->isCreated() == false)
-                            continue;
-                        tile.mTexture->mTexture->bind();
-                        glDrawRangeElements(GL_TRIANGLE_FAN, start, end, count, GL_UNSIGNED_INT, (void*)(start * sizeof(GLuint)));
-#endif
-                        if (countRenderedTiles)
-                            ZLevelRenderer::addRenderedTileCount();
-                    }
-                }
-            }
-            if (currentTiles != nullptr) {
-                currentTiles->mIndexBuffer.release();
-                currentTiles->mVertexBuffer.release();
-            }
+    for (const Batch &batch : std::as_const(batches)) {
+        glActiveTexture(GL_TEXTURE0 + TILE_ATLAS_FALLBACK_UNIT);
+        glBindTexture(GL_TEXTURE_2D, batch.mFallbackTexture);
+        const int end = batch.mFirstQuad + batch.mQuadCount;
+        for (int first = batch.mFirstQuad; first < end; first += maxQuadsPerDraw) {
+            const int count = qMin(maxQuadsPerDraw, end - first);
+            glDrawElementsBaseVertex(GL_TRIANGLES, count * 6, GL_UNSIGNED_INT,
+                                     nullptr, first * 4);
         }
     }
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    if (wireframe) {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    for (int unit = 0; unit < TILE_ATLAS_SAMPLER_COUNT; ++unit) {
+        if (unit >= pageCount && unit != TILE_ATLAS_FALLBACK_UNIT)
+            continue;
+        glActiveTexture(GL_TEXTURE0 + unit);
+        glBindTexture(GL_TEXTURE_2D, 0);
     }
+    glActiveTexture(GL_TEXTURE0);
+
+    shaderProgram.disableAttributeArray(posAttr);
+    shaderProgram.disableAttributeArray(texAttr);
+    shaderProgram.disableAttributeArray(pageAttr);
+    shaderProgram.disableAttributeArray(alphaAttr);
+    streamBuffer.release();
+    indexBuffer.release();
 }
 
 // tangram-es\core\src\util\rasterize.cpp
@@ -1602,7 +1740,7 @@ VBOTiles *LayerGroupVBO::getTilesFor(const QPoint &square, bool bCreate)
     return vboTiles;
 }
 
-void LayerGroupVBO::getSquaresInRect(Tiled::MapRenderer *renderer, const QRectF &exposed, QList<QPoint> &out)
+void LayerGroupVBO::getSquaresInRect(Tiled::MapRenderer *renderer, const QRectF &exposed, QVector<QPoint> &out)
 {
     const int tileWidth = DISPLAY_TILE_WIDTH;
     const int tileHeight = DISPLAY_TILE_HEIGHT;
@@ -1682,6 +1820,33 @@ void LayerGroupVBO::getSquaresInRect(Tiled::MapRenderer *renderer, const QRectF 
             shifted = false;
         }
     }
+}
+
+void LayerGroupVBO::resolveAtlasTile(VBOTile &tile, int pageSize)
+{
+    const QList<Tileset*> &tilesets = mMapCompositeVBO->usedTilesets();
+    if (const TilesetAtlasPlacement *placement = TILESET_TEXTURES.atlasPlacement(tile.mTilesetName, tilesets)) {
+        const QRect &sheetRect = placement->mRect;
+        const float scale = 1.0f / float(pageSize);
+        tile.mAtlasPage = placement->mPage;
+        tile.mU0 = (sheetRect.x() + tile.mAtlasUVST.u * sheetRect.width()) * scale;
+        tile.mV0 = (sheetRect.y() + tile.mAtlasUVST.v * sheetRect.height()) * scale;
+        tile.mU1 = (sheetRect.x() + tile.mAtlasUVST.s * sheetRect.width()) * scale;
+        tile.mV1 = (sheetRect.y() + tile.mAtlasUVST.t * sheetRect.height()) * scale;
+        return;
+    }
+    if (tile.mTexture == nullptr) {
+        tile.mTexture = TILESET_TEXTURES.get(tile.mTilesetName, tilesets);
+    }
+#if TILESET_TEXTURE_GL == 0
+    if (tile.mTexture == nullptr || tile.mTexture->mID == -1)
+        return;
+#endif
+    tile.mAtlasPage = TILE_ATLAS_FALLBACK_PAGE;
+    tile.mU0 = tile.mAtlasUVST.u;
+    tile.mV0 = tile.mAtlasUVST.v;
+    tile.mU1 = tile.mAtlasUVST.s;
+    tile.mV1 = tile.mAtlasUVST.t;
 }
 
 bool LayerGroupVBO::isEmpty() const
