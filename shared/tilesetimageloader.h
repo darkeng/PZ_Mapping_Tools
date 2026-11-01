@@ -122,7 +122,7 @@ private:
 
     void startRequests()
     {
-        while (mActive < mPool.maxThreadCount() && !mRequests.isEmpty()) {
+        while (!mRequests.isEmpty()) {
             ++mActive;
             mPool.start(new Job(this, mRequests.dequeue()));
         }
