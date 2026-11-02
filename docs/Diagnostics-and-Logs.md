@@ -88,6 +88,11 @@ loaded and missing totals, and timing summaries.
 Only the exact libpng warning `iCCP: known incorrect sRGB profile` is
 suppressed. Other PNG warnings and errors remain visible.
 
+Each application logs the effective Project Zomboid directory. When no Project
+Zomboid TileDef file is available, the log and the warning counter show `No
+Project Zomboid tile definition files were found`. Shaped window frames, grime,
+and other tile properties then use defaults.
+
 If Windows reports **Bad Image** before a window opens, the runtime can fail
 before the logger starts. Record the named DLL, then re-extract the release
 before changing preferences.

@@ -478,11 +478,14 @@ Important additions include:
 2. Start any of the three applications.
 3. Select the mapping **Tiles** directory that contains the PNG sheets.
 4. Select the packaged `config` directory if it was not found automatically.
-5. Optionally select the Project Zomboid installation in Preferences.
+5. Check the Project Zomboid installation in Preferences. An installation in
+   any Steam library is found automatically while no path is set.
 
 The shared Project Zomboid path can supply official TileDefs, texture packs,
 WorldGen data, procedural-loot definitions, and vehicle preview assets. It does
 not replace the extracted mapping Tiles directory required by the renderers.
+Shaped window frames and grime use the official TileDefs. When no TileDef file
+is found, the applications show a warning and use the default window opening.
 
 ## Cell View vehicle previews
 

@@ -36,6 +36,13 @@ published on 2026-10-24._
   second.
 - WorldEd no longer crashes on exit when OpenGL textures are released without
   an active OpenGL context.
+- A Project Zomboid installation in any Steam library is found automatically
+  while no installation path is set. Only the default Steam folder was checked
+  before, so games installed in another library did not supply the official
+  TileDefs, and shaped windows used the default rectangular wall opening in
+  all three editors and in generated lots.
+- The editors show a warning when no Project Zomboid tile definition file is
+  found.
 
 ## Credits and special thanks
 

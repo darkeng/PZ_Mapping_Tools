@@ -8,6 +8,8 @@ Most users should change these files only through the applications.
 - **Tiles** points to the extracted PNG tree used by the renderers.
 - **Configuration** points to the packaged PZTools `config` directory.
 - **Project Zomboid Installation** points to the game root or `media` folder.
+  While no path is set, an installation in any Steam library is found
+  automatically.
 - **Settings** contains preferences and logs. It is not configuration data.
 
 The game installation is a read-only reference. Project rules and overrides
