@@ -39,6 +39,7 @@ private:
         quint16 atlasRect[4];
         quint8 page;
         quint8 opacity;
+        quint16 padding;
     };
 
     const OpenGLTileAtlas *mAtlas;

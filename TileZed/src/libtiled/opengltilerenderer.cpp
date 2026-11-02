@@ -30,8 +30,7 @@ const char *tileVertexShader = R"(
 layout(location = 0) in vec2 tilePosition;
 layout(location = 1) in vec4 tileMatrix;
 layout(location = 2) in vec4 tileAtlasRect;
-layout(location = 3) in uint tilePage;
-layout(location = 4) in float tileOpacity;
+layout(location = 3) in uvec2 tilePageOpacity;
 uniform mat3 sceneToClip;
 uniform vec2 atlasTexelSize;
 uniform float texelBias;
@@ -45,8 +44,8 @@ void main()
     vec2 scenePoint = tilePosition + mat2(tileMatrix.xy, tileMatrix.zw) * imagePoint;
     gl_Position = vec4((sceneToClip * vec3(scenePoint, 1.0)).xy, 0.0, 1.0);
     texCoord = (tileAtlasRect.xy + imagePoint + vec2(texelBias)) * atlasTexelSize;
-    texPage = tilePage;
-    texOpacity = tileOpacity;
+    texPage = tilePageOpacity.x;
+    texOpacity = float(tilePageOpacity.y) / 255.0;
 }
 )";
 
@@ -374,6 +373,7 @@ void OpenGLTileBatch::drawTile(const QImage &image, const QTransform &transform)
     instance.atlasRect[2] = quint16(image.width());
     instance.atlasRect[3] = quint16(image.height());
     instance.opacity = mOpacity;
+    instance.padding = 0;
     if (const OpenGLTileAtlas::Placement *placement = mAtlas->find(image.cacheKey())) {
         instance.atlasRect[0] = placement->x;
         instance.atlasRect[1] = placement->y;
@@ -504,7 +504,7 @@ bool OpenGLTileRenderer::initialize()
     }
     glBindVertexArray(mVertexArray);
     glBindBuffer(GL_ARRAY_BUFFER, mInstanceBuffer);
-    for (GLuint attribute = 0; attribute < 5; ++attribute) {
+    for (GLuint attribute = 0; attribute < 4; ++attribute) {
         glEnableVertexAttribArray(attribute);
         glVertexAttribDivisor(attribute, 1);
     }
@@ -723,10 +723,8 @@ void OpenGLTileRenderer::bindInstanceAttributes(int firstInstance)
                           fieldOffset(offsetof(Instance, matrix)));
     glVertexAttribPointer(2, 4, GL_UNSIGNED_SHORT, GL_FALSE, stride,
                           fieldOffset(offsetof(Instance, atlasRect)));
-    glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, stride,
+    glVertexAttribIPointer(3, 2, GL_UNSIGNED_BYTE, stride,
                            fieldOffset(offsetof(Instance, page)));
-    glVertexAttribPointer(4, 1, GL_UNSIGNED_BYTE, GL_TRUE, stride,
-                          fieldOffset(offsetof(Instance, opacity)));
 }
 
 void OpenGLTileRenderer::drawInstances(int firstInstance, int instanceCount, bool smoothTransform)
