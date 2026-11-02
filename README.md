@@ -58,6 +58,10 @@ visible level of the cell and its adjacent cells in a few batched calls, in the
 same order and with the same layer, lot and room visibility rules.
 OpenGL tile blending preserves alpha correctly to avoid bright fringes on
 semi-transparent tile edges.
+When a cell opens, WorldEd searches for a missing tilesheet image once rather
+than once per placed building lot, and searches again after the Tiles
+directories change. Placed TBX lots and BuildingEd floors index the tilesheet
+catalogue once per update when applying user-drawn tiles.
 All three applications start at a centered 1920 x 1080 window size, reduced
 when needed to fit the available desktop, including the window frame.
 Their shared loading window shows the current phase and completed tileset
