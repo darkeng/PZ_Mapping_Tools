@@ -715,7 +715,7 @@ bool Preferences::validateSharedPaths(QString *errorString)
         *errorString = QStringLiteral("Shared path refresh or no-op notification failed.");
         return false;
     }
-    return true;
+    return PortableSettings::validateSteamLibraryDetection(errorString);
 }
 
 QString Preferences::configPath(const QString &fileName) const

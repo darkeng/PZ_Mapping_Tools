@@ -10,11 +10,13 @@
 #include <QGuiApplication>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QSettings>
 #include <QSize>
 #include <QStringList>
 #include <QSysInfo>
+#include <QTemporaryDir>
 #include <QThread>
 #include <QWidget>
 #include <QWindow>
@@ -270,19 +272,118 @@ inline bool isGamePath(const QString &candidate)
 {
     return !normalizedGamePath(candidate).isEmpty();
 }
-inline QString detectGamePath()
+inline void appendUniquePath(QStringList &paths, const QString &path)
 {
-    QStringList candidates;
-    candidates << QStringLiteral(
-                      "C:/Program Files (x86)/Steam/steamapps/common/ProjectZomboid")
-               << QStringLiteral(
-                      "C:/Program Files/Steam/steamapps/common/ProjectZomboid");
-    for (const QString &candidate : candidates) {
-        const QString normalized = normalizedGamePath(candidate);
+    if (path.trimmed().isEmpty())
+        return;
+    const QString cleaned = QDir::cleanPath(
+                QDir::fromNativeSeparators(path.trimmed()));
+    for (const QString &existing : qAsConst(paths)) {
+        if (existing.compare(cleaned, Qt::CaseInsensitive) == 0)
+            return;
+    }
+    paths.append(cleaned);
+}
+inline QStringList steamLibraryFolders(const QString &steamRoot)
+{
+    QStringList libraries;
+    appendUniquePath(libraries, steamRoot);
+    QFile file(QDir(steamRoot).filePath(
+                   QLatin1String("steamapps/libraryfolders.vdf")));
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return libraries;
+    const QRegularExpression pathEntry(
+                QStringLiteral("^\\s*\"path\"\\s+\"([^\"]*)\""));
+    while (!file.atEnd()) {
+        const QRegularExpressionMatch match =
+                pathEntry.match(QString::fromUtf8(file.readLine()));
+        if (match.hasMatch()) {
+            appendUniquePath(libraries, match.captured(1).replace(
+                                 QLatin1String("\\\\"), QLatin1String("\\")));
+        }
+    }
+    return libraries;
+}
+inline QStringList steamLibraryPaths()
+{
+    QStringList steamRoots;
+    const QStringList registryKeys = {
+        QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam"),
+        QStringLiteral("HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Valve\\Steam"),
+        QStringLiteral("HKEY_LOCAL_MACHINE\\SOFTWARE\\Valve\\Steam")
+    };
+    for (const QString &key : registryKeys) {
+        const QSettings registry(key, QSettings::NativeFormat);
+        appendUniquePath(steamRoots,
+                         registry.value(QLatin1String("SteamPath")).toString());
+        appendUniquePath(steamRoots,
+                         registry.value(QLatin1String("InstallPath")).toString());
+    }
+    appendUniquePath(steamRoots, QStringLiteral("C:/Program Files (x86)/Steam"));
+    appendUniquePath(steamRoots, QStringLiteral("C:/Program Files/Steam"));
+    QStringList libraries;
+    for (const QString &steamRoot : qAsConst(steamRoots)) {
+        for (const QString &library : steamLibraryFolders(steamRoot))
+            appendUniquePath(libraries, library);
+    }
+    return libraries;
+}
+inline QString gamePathInSteamLibraries(const QStringList &libraries)
+{
+    for (const QString &library : libraries) {
+        const QString normalized = normalizedGamePath(QDir(library).filePath(
+                    QLatin1String("steamapps/common/ProjectZomboid")));
         if (!normalized.isEmpty())
             return normalized;
     }
     return QString();
+}
+inline QString detectGamePath()
+{
+    return gamePathInSteamLibraries(steamLibraryPaths());
+}
+inline bool validateSteamLibraryDetection(QString *errorString)
+{
+    QTemporaryDir directory;
+    if (!directory.isValid()) {
+        *errorString = QStringLiteral("Could not create Steam library fixtures.");
+        return false;
+    }
+    const QString steamRoot = directory.filePath(QStringLiteral("Steam"));
+    const QString library = directory.filePath(QStringLiteral("Game Library"));
+    const QString game = QDir(library).filePath(
+                QStringLiteral("steamapps/common/ProjectZomboid"));
+    QFile file(QDir(steamRoot).filePath(
+                   QStringLiteral("steamapps/libraryfolders.vdf")));
+    if (!QDir().mkpath(QDir(steamRoot).filePath(QStringLiteral("steamapps")))
+            || !QDir().mkpath(QDir(game).filePath(QStringLiteral("media/lua")))
+            || !file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        *errorString = QStringLiteral("Could not write Steam library fixtures.");
+        return false;
+    }
+    const auto escaped = [](const QString &path) {
+        return QDir::toNativeSeparators(path).replace(
+                    QLatin1String("\\"), QLatin1String("\\\\"));
+    };
+    file.write(QStringLiteral(
+                   "\"libraryfolders\"\n{\n"
+                   "\t\"0\"\n\t{\n\t\t\"path\"\t\t\"%1\"\n"
+                   "\t\t\"apps\"\n\t\t{\n\t\t\t\"228980\"\t\t\"1024\"\n\t\t}\n\t}\n"
+                   "\t\"1\"\n\t{\n\t\t\"path\"\t\t\"%2\"\n"
+                   "\t\t\"apps\"\n\t\t{\n\t\t\t\"108600\"\t\t\"2048\"\n\t\t}\n\t}\n"
+                   "}\n").arg(escaped(steamRoot), escaped(library)).toUtf8());
+    file.close();
+    const QStringList libraries = steamLibraryFolders(steamRoot);
+    if (libraries != QStringList({QDir::cleanPath(steamRoot),
+                                  QDir::cleanPath(library)})) {
+        *errorString = QStringLiteral("Steam library folders were not read from libraryfolders.vdf.");
+        return false;
+    }
+    if (gamePathInSteamLibraries(libraries) != QDir::cleanPath(game)) {
+        *errorString = QStringLiteral("Project Zomboid was not found in a secondary Steam library.");
+        return false;
+    }
+    return true;
 }
 inline QString sharedGamePath()
 {
