@@ -777,9 +777,10 @@ void BuildingMap::BuildingToMap()
     }
 
     // Set the user-drawn tiles.
+    const QHash<QString,Tileset*> tilesetByName = tilesetsByName();
     foreach (BuildingFloor *floor, mBuilding->floors()) {
         foreach (QString layerName, floor->grimeLayers())
-            userTilesToLayer(floor, layerName, floor->bounds(1, 1));
+            userTilesToLayer(floor, layerName, floor->bounds(1, 1), tilesetByName);
     }
 
     // Do this before calculating the bounds of CompositeLayerGroupItem
@@ -836,9 +837,18 @@ void BuildingMap::BuildingSquaresToTileLayers(BuildingFloor *floor,
     }
 }
 
+QHash<QString,Tileset*> BuildingMap::tilesetsByName() const
+{
+    QHash<QString,Tileset*> tilesetByName;
+    foreach (Tileset *ts, mMap->tilesets())
+        tilesetByName[ts->name()] = ts;
+    return tilesetByName;
+}
+
 void BuildingMap::userTilesToLayer(BuildingFloor *floor,
                                    const QString &layerName,
-                                   const QRect &bounds)
+                                   const QRect &bounds,
+                                   const QHash<QString,Tileset*> &tilesetByName)
 {
     CompositeLayerGroup *layerGroup = mMapComposite->layerGroupForLevel(floor->level());
     TileLayer *layer = nullptr;
@@ -855,15 +865,12 @@ void BuildingMap::userTilesToLayer(BuildingFloor *floor,
         return;
     }
 
-    QMap<QString,Tileset*> tilesetByName;
-    foreach (Tileset *ts, mMap->tilesets())
-        tilesetByName[ts->name()] = ts;
-
     QRegion suppress;
     if (mSuppressTiles.contains(floor))
         suppress = mSuppressTiles[floor];
 
     BuildingFloor *shadowFloor = mShadowBuilding->floor(floor->level());
+    const FloorTileGrid *grime = shadowFloor->grime().value(layerName);
 
     for (int x = bounds.left(); x <= bounds.right(); x++) {
         for (int y = bounds.top(); y <= bounds.bottom(); y++) {
@@ -871,7 +878,7 @@ void BuildingMap::userTilesToLayer(BuildingFloor *floor,
                 layer->setCell(x, y, Cell());
                 continue;
             }
-            QString tileName = shadowFloor->grimeAt(layerName, x, y);
+            QString tileName = grime ? grime->at(x, y) : QString();
             Tile *tile = nullptr;
             if (!tileName.isEmpty()) {
                 tile = TilesetManager::instance()->missingTile();
@@ -1166,11 +1173,12 @@ void BuildingMap::handlePending()
     }
 
     if (!pendingUserTilesToLayer.isEmpty()) {
+        const QHash<QString,Tileset*> tilesetByName = tilesetsByName();
         foreach (BuildingFloor *floor, pendingUserTilesToLayer.keys()) {
             foreach (QString layerName, pendingUserTilesToLayer[floor].keys()) {
                 QRegion rgn = pendingUserTilesToLayer[floor][layerName];
                 for (QRect r : rgn)
-                    userTilesToLayer(floor, layerName, r);
+                    userTilesToLayer(floor, layerName, r, tilesetByName);
                 updatedLevels[floor->level()] |= rgn;
             }
         }

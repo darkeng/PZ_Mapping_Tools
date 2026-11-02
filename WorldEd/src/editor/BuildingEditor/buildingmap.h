@@ -20,6 +20,7 @@
 
 #include <QObject>
 
+#include <QHash>
 #include <QMap>
 #include <QRegion>
 #include <QSet>
@@ -229,8 +230,10 @@ private:
     void BuildingSquaresToTileLayers(BuildingFloor *floor, const QRect &area,
                                      CompositeLayerGroup *layerGroup);
 
+    QHash<QString, Tiled::Tileset*> tilesetsByName() const;
     void userTilesToLayer(BuildingFloor *floor, const QString &layerName,
-                          const QRect &bounds);
+                          const QRect &bounds,
+                          const QHash<QString, Tiled::Tileset*> &tilesetByName);
 
     bool isAdjacentToRoom(BuildingFloor *floor, int x, int y);
     bool isAdjacentToRoomThisLevelOrBelow(int x, int y, int level);
