@@ -46,6 +46,10 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QHash>
+#include <QPair>
+
+#include <algorithm>
 
 #ifdef WORLDED
 #include "worldconstants.h"
@@ -1611,15 +1615,21 @@ void MapComposite::moveSubMap(MapComposite *subMap, const QPoint &pos)
 
 void MapComposite::sortSubMaps(const QVector<MapComposite *> &order)
 {
-    std::sort(mSubMaps.begin(), mSubMaps.end(), [order,this](MapComposite *a, MapComposite *b) {
-        int indexA = order.indexOf(a);
-        int indexB = order.indexOf(b);
-        if (indexA == -1)
-            indexA = mSubMaps.indexOf(a);
-        if (indexB == -1)
-            indexB = mSubMaps.indexOf(b);
-        return indexA < indexB;
+    QHash<MapComposite *, int> orderIndex;
+    orderIndex.reserve(order.size());
+    for (int index = order.size() - 1; index >= 0; --index)
+        orderIndex.insert(order[index], index);
+
+    QVector<QPair<int, MapComposite *>> subMapsByKey;
+    subMapsByKey.reserve(mSubMaps.size());
+    for (int index = 0; index < mSubMaps.size(); ++index)
+        subMapsByKey.append(qMakePair(orderIndex.value(mSubMaps[index], index), mSubMaps[index]));
+    std::stable_sort(subMapsByKey.begin(), subMapsByKey.end(),
+                     [](const QPair<int, MapComposite *> &a, const QPair<int, MapComposite *> &b) {
+        return a.first < b.first;
     });
+    for (int index = 0; index < subMapsByKey.size(); ++index)
+        mSubMaps[index] = subMapsByKey[index].second;
 
     for (CompositeLayerGroup *layerGroup : qAsConst(mLayerGroups)) {
         layerGroup->setNeedsSynch(true);
