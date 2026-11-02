@@ -113,6 +113,7 @@ public:
     void destroyRenderData(Tiled::ZTileLayerGroupRenderData *renderData) const override;
 private:
     void orderedCellsAt(const QPoint &pos, const QRegion &suppressRgn, const QPoint &rootPos, QVector<OrderedCell> &cells);
+    void updateDrawingContentBounds();
 public:
     QRect bounds() const override;
     QMargins drawMargins() const override;
@@ -223,6 +224,7 @@ private:
     MapComposite *mOwner;
     bool mAnyVisibleLayers;
     bool mNeedsSynch;
+    QRect mDrawingContentBounds;
     QRect mTileBounds;
     QRect mSubMapTileBounds;
     QMargins mDrawMargins;

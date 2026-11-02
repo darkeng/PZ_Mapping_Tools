@@ -221,6 +221,30 @@ void CompositeLayerGroup::prepareDrawing(const MapRenderer *renderer, const QRec
     if (level() == 0 && mOwner->bmpBlender()) {
         mOwner->bmpBlender()->flush(renderer, rect, mOwner->originRecursive());
     }
+    updateDrawingContentBounds();
+}
+
+void CompositeLayerGroup::updateDrawingContentBounds()
+{
+    const QPoint levelOffset = mOwner->orientAdjustTiles() * mLevel;
+    QRect contentBounds;
+    for (int index = 0; index < mLayers.size(); ++index) {
+        const TileLayer *tl = mLayers[index];
+        QRect layerContentBounds = tl->contentBounds();
+        if (const TileLayer *bmpBlendLayer = mBmpBlendLayers[index])
+            layerContentBounds |= bmpBlendLayer->contentBounds();
+        if (const MapNoBlend *noBlend = mNoBlends[index])
+            layerContentBounds |= QRect(0, 0, noBlend->width(), noBlend->height());
+#ifdef BUILDINGED
+        if (const TileLayer *blendOverLayer = mBlendOverLayers[index])
+            layerContentBounds |= blendOverLayer->contentBounds();
+        if (mToolLayers[index].mLayer != nullptr)
+            layerContentBounds |= mToolLayers[index].mRegion.boundingRect();
+        layerContentBounds |= mToolNoBlends[index].mRegion.boundingRect();
+#endif // BUILDINGED
+        contentBounds |= layerContentBounds.translated(levelOffset + tl->position());
+    }
+    mDrawingContentBounds = contentBounds;
 }
 
 static QString sFloor = QStringLiteral("Floor");
@@ -396,6 +420,8 @@ void CompositeLayerGroup::destroyRenderData(ZTileLayerGroupRenderData *renderDat
 
 void CompositeLayerGroup::orderedCellsAt(const QPoint &pos, const QRegion &suppressRgn, const QPoint &rootPos, QVector<OrderedCell> &cells)
 {
+    if (!mDrawingContentBounds.contains(pos))
+        return;
     const MapComposite *root = mOwner->root();
     const Cell emptyCell;
     for (int index = 0; index < mLayers.size(); index++) {

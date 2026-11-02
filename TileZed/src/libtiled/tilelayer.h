@@ -41,6 +41,8 @@
 #include <QString>
 #include <QVector>
 
+#include <limits>
+
 namespace Tiled {
 
 class Tile;
@@ -106,6 +108,7 @@ public:
         , mHeight(height)
         , mUseVector(false)
     {
+        clearContentBounds();
     }
 
     int size() const
@@ -123,32 +126,23 @@ public:
 
     const Cell &at(int x, int y) const
     {
+        if (x >= 0 && x < mWidth && !mayContainCellAt(x, y))
+            return mEmptyCell;
         return at(y * mWidth + x);
     }
 
     void replace(int index, const Cell &cell)
     {
-        if (mUseVector) {
-            mCellsVector[index] = cell;
-            return;
-        }
-        QHash<int,Cell>::iterator it = mCells.find(index);
-        if (it == mCells.end()) {
-            if (cell.isEmpty())
-                return;
-            mCells.insert(index, cell);
-        } else if (!cell.isEmpty())
-            (*it) = cell;
-        else
-            mCells.erase(it);
-        if (mCells.size() > 300 * 300 / 3)
-            swapToVector();
+        if (!cell.isEmpty() && mWidth > 0)
+            includeInContentBounds(index % mWidth, index / mWidth);
+        store(index, cell);
     }
 
     void replace(int x, int y, const Cell &cell)
     {
-        int index = y * mWidth + x;
-        replace(index, cell);
+        if (!cell.isEmpty())
+            includeInContentBounds(x, y);
+        store(y * mWidth + x, cell);
     }
 
     void setTile(int index, Tile *tile)
@@ -161,12 +155,20 @@ public:
     bool isEmpty() const
     { return !mUseVector && mCells.isEmpty(); }
 
+    QRect contentBounds() const
+    {
+        if (mContentLeft > mContentRight)
+            return QRect();
+        return QRect(QPoint(mContentLeft, mContentTop), QPoint(mContentRight, mContentBottom));
+    }
+
     void clear()
     {
         if (mUseVector)
             mCellsVector.fill(mEmptyCell);
         else
             mCells.clear();
+        clearContentBounds();
     }
 
     void resizePreservingCells(int width, int height, const QPoint &offset)
@@ -195,6 +197,25 @@ public:
         *this = resized;
     }
 private:
+    void store(int index, const Cell &cell)
+    {
+        if (mUseVector) {
+            mCellsVector[index] = cell;
+            return;
+        }
+        QHash<int,Cell>::iterator it = mCells.find(index);
+        if (it == mCells.end()) {
+            if (cell.isEmpty())
+                return;
+            mCells.insert(index, cell);
+        } else if (!cell.isEmpty())
+            (*it) = cell;
+        else
+            mCells.erase(it);
+        if (mCells.size() > 300 * 300 / 3)
+            swapToVector();
+    }
+
     void swapToVector()
     {
         Q_ASSERT(!mUseVector);
@@ -208,11 +229,37 @@ private:
         mUseVector = true;
     }
 
+    bool mayContainCellAt(int x, int y) const
+    {
+        return x >= mContentLeft && x <= mContentRight
+                && y >= mContentTop && y <= mContentBottom;
+    }
+
+    void includeInContentBounds(int x, int y)
+    {
+        mContentLeft = qMin(mContentLeft, x);
+        mContentTop = qMin(mContentTop, y);
+        mContentRight = qMax(mContentRight, x);
+        mContentBottom = qMax(mContentBottom, y);
+    }
+
+    void clearContentBounds()
+    {
+        mContentLeft = std::numeric_limits<int>::max();
+        mContentTop = std::numeric_limits<int>::max();
+        mContentRight = std::numeric_limits<int>::min();
+        mContentBottom = std::numeric_limits<int>::min();
+    }
+
     int mWidth, mHeight;
     QHash<int,Cell> mCells;
     QVector<Cell> mCellsVector;
     bool mUseVector;
     Cell mEmptyCell;
+    int mContentLeft;
+    int mContentTop;
+    int mContentRight;
+    int mContentBottom;
 };
 #endif
 
@@ -276,12 +323,22 @@ public:
      */
     QRegion region() const;
 
+#if SPARSE_TILELAYER
+    QRect contentBounds() const { return mGrid.contentBounds(); }
+#else
+    QRect contentBounds() const { return QRect(0, 0, mWidth, mHeight); }
+#endif
+
     /**
      * Returns a read-only reference to the cell at the given coordinates. The
      * coordinates have to be within this layer.
      */
     const Cell &cellAt(int x, int y) const
+#if SPARSE_TILELAYER
+    { return mGrid.at(x, y); }
+#else
     { return mGrid.at(x + y * mWidth); }
+#endif
 
     const Cell &cellAt(const QPoint &point) const
     { return cellAt(point.x(), point.y()); }
