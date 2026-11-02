@@ -231,6 +231,13 @@ static bool shouldSuppressExistingTilesOnLevel(int level) {
     return true;
 }
 
+static bool isNoBlendAt(const MapNoBlend &noBlend, const QPoint &pos)
+{
+    return pos.x() >= 0 && pos.y() >= 0
+            && pos.x() < noBlend.width() && pos.y() < noBlend.height()
+            && noBlend.get(pos);
+}
+
 bool CompositeLayerGroup::orderedCellsAt(const QPoint &pos,
                                          QVector<const Cell *> &cells,
                                          QVector<qreal> &opacities,
@@ -444,7 +451,8 @@ void CompositeLayerGroup::orderedCellsAt(const QPoint &pos, const QRegion &suppr
         }
 
         // Draw the no-blend tile.
-        if (noBlend && tl->nameWithPrefix() == mOwner->mNoBlendLayer && noBlend->get(subPos - nbPos)) {
+        if (noBlend && isNoBlendAt(*noBlend, subPos - nbPos)
+                && tl->nameWithPrefix() == mOwner->mNoBlendLayer) {
             cells.append(OrderedCell(this, index, tl, &mNoBlendCell, 0.25));
         }
     }
