@@ -48,6 +48,9 @@ graphics card. Tile images are packed into texture pages shared by the views of
 a window, each visible level is drawn in a few batched calls, and the visible
 tile rows are gathered on all processor threads in the same order and with the
 same visibility rules as the raster renderer.
+Both renderers skip map positions outside the area that contains tiles on each
+drawn level, and the edited map's tile layers track that area as tiles are
+placed.
 WorldEd draws cell tiles using the active drawing surface rather than the saved
 OpenGL preference, retaining visible tiles when switching rendering backends.
 Its OpenGL renderer packs tilesheets into shared texture pages and draws each
