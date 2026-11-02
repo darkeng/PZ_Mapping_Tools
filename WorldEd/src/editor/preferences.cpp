@@ -523,6 +523,16 @@ Preferences::Preferences()
                 mTilePropertiesFiles.append(candidate.canonicalFilePath());
         }
     }
+    bool hasTileDefinitions = false;
+    for (const QString &path : qAsConst(mTilePropertiesFiles))
+        hasTileDefinitions = hasTileDefinitions || QFileInfo(path).isFile();
+    if (!hasTileDefinitions) {
+        qWarning().noquote()
+                << "No Project Zomboid tile definition files were found."
+                << "Window frames, grime and other tile properties use defaults"
+                << "until the Project Zomboid installation is set in Preferences"
+                << "and the application is restarted.";
+    }
 
     mOpenFileDirectory = mSettings->value(QLatin1String("OpenFileDirectory")).toString();
     mWorldMapXMLFile = mSettings->value(QLatin1String("WorldMapXMLFile")).toString();

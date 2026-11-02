@@ -420,6 +420,16 @@ Preferences::Preferences()
         mSettings->setValue(QLatin1String("TilePropertiesFiles"),
                             mTilePropertiesFiles);
     }
+    bool hasTileDefinitions = false;
+    for (const QString &path : qAsConst(mTilePropertiesFiles))
+        hasTileDefinitions = hasTileDefinitions || QFileInfo(path).isFile();
+    if (!hasTileDefinitions) {
+        qWarning().noquote()
+                << "No Project Zomboid tile definition files were found."
+                << "Window frames, grime and other tile properties use defaults"
+                << "until the Project Zomboid installation is set in Preferences"
+                << "and the application is restarted.";
+    }
 #endif
 #ifndef ZOMBOID // do this in TilesetManager constructor to avoid infinite loop
     TilesetManager *tilesetManager = TilesetManager::instance();
