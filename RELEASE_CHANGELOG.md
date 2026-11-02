@@ -1,4 +1,4 @@
-# PZ Mapping Tools - Build 20261101b
+# PZ Mapping Tools - Build 20261102
 
 _Changes since [Build 20261030](https://github.com/Unjammer/PZ_Mapping_Tools/releases/tag/43.00B261030),
 published on 2026-11-02._
