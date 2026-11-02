@@ -222,6 +222,7 @@ private:
     TilesetImageLoader *mImageLoader;
     PZTools::TilesetFileIndex mTilesetFileIndex;
     QSet<Tileset *> mPendingImages;
+    QSet<Tileset *> mAbsentImageTilesets;
     void queueImage(Tileset *tileset);
 
     Tileset *mInvisibleTileset;

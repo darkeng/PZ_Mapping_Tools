@@ -209,6 +209,7 @@ void TilesetManager::removeReference(Tileset *tileset)
     if (mTilesets.value(tileset) == 0) {
         mTilesets.remove(tileset);
 #ifdef ZOMBOID
+        mAbsentImageTilesets.remove(tileset);
 #else
         if (!tileset->imageSource().isEmpty())
             mWatcher->removePath(tileset->imageSource());
@@ -244,6 +245,7 @@ void TilesetManager::setReloadTilesetsOnChange(bool enabled)
 void TilesetManager::tilesetDirectoryChanged()
 {
     mTilesetPaths.clear();
+    mAbsentImageTilesets.clear();
     if (!mWatchedTilesetDirectories.isEmpty())
         mWatcher->removePaths(mWatchedTilesetDirectories);
     mWatchedTilesetDirectories.clear();
@@ -357,6 +359,7 @@ void TilesetManager::fileChangedTimeout()
     if (!mChangedDirectories.isEmpty()) {
         qInfo() << "Tiles directory changed:" << mChangedDirectories;
         mTilesetPaths.clear();
+        mAbsentImageTilesets.clear();
         mTilesetFileIndex.invalidate();
         if (!TileMetaInfoMgr::instance()->addNewTilesets()) {
             qWarning().noquote()
@@ -557,6 +560,8 @@ void TilesetManager::loadTileset(Tileset *tileset, const QString &imageSource_)
     }
     if (tileset->isLoaded())
         return;
+    if (tileset->isMissing() && mAbsentImageTilesets.contains(tileset))
+        return;
 
     QString imageSource, imageSource2x;
     getTilesetFileName(tileset->name(), imageSource, imageSource2x);
@@ -596,6 +601,8 @@ void TilesetManager::loadTileset(Tileset *tileset, const QString &imageSource_)
         }
         changeTilesetSource(tileset, imageSource, true);
         tileset->setImageSource2x(QString());
+        if (!QFileInfo::exists(imageSource) && !QFileInfo::exists(imageSource2x))
+            mAbsentImageTilesets.insert(tileset);
     }
 }
 
