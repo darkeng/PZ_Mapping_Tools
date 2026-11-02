@@ -38,11 +38,12 @@
 #include "imagelayer.h"
 #include "ztilelayergroup.h"
 
-#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <vector>
 
 #include <QCoreApplication>
@@ -62,7 +63,7 @@ const int minimumParallelTilePositions = 12288;
 const int minimumParallelBandHeight = 48;
 const int bandsPerParallelThread = 2;
 const int minimumParallelOpenGLTilePositions = 4096;
-const int minimumOpenGLBatchRows = 8;
+const int rowsPerOpenGLBatch = 4;
 
 class RasterTileTarget : public TileDrawTarget
 {
@@ -218,6 +219,45 @@ public:
 
 private:
     std::function<void()> mWork;
+};
+
+class TileRowBatchQueue
+{
+public:
+    using DrawBatch = std::function<void(int batchIndex, ZTileLayerGroupRenderData *renderData)>;
+
+    explicit TileRowBatchQueue(int batchCount)
+        : mBatchCount(batchCount)
+        , mNextBatch(0)
+        , mCompletedBatches(0)
+    {
+    }
+
+    void setDrawBatch(DrawBatch drawBatch)
+    {
+        mDrawBatch = std::move(drawBatch);
+    }
+
+    void drawRemainingBatches(ZTileLayerGroupRenderData *renderData)
+    {
+        for (int batchIndex = mNextBatch++; batchIndex < mBatchCount;
+             batchIndex = mNextBatch++) {
+            mDrawBatch(batchIndex, renderData);
+            ++mCompletedBatches;
+        }
+    }
+
+    void waitForBatches() const
+    {
+        while (mCompletedBatches.load() < mBatchCount)
+            QThread::yieldCurrentThread();
+    }
+
+private:
+    const int mBatchCount;
+    std::atomic<int> mNextBatch;
+    std::atomic<int> mCompletedBatches;
+    DrawBatch mDrawBatch;
 };
 
 QThreadPool *tileBandThreadPool()
@@ -659,66 +699,56 @@ bool ZLevelRenderer::drawTileLayerGroupWithOpenGL(QPainter *painter, ZTileLayerG
                                                    tileWidth, tileHeight),
                                       rect, tileHeight);
     const qint64 tilePositions = qint64(rowCount) * (rect.width() / tileWidth + 1);
+    const int chunkCount = (rowCount + rowsPerOpenGLBatch - 1) / rowsPerOpenGLBatch;
     QThreadPool *threadPool = tileBandThreadPool();
-    int batchCount = 1;
-    if (tilePositions >= minimumParallelOpenGLTilePositions) {
-        batchCount = qBound(1, qMin(threadPool->maxThreadCount() * bandsPerParallelThread,
-                                    rowCount / minimumOpenGLBatchRows),
-                            rowCount);
+    int workerCount = 1;
+    if (tilePositions >= minimumParallelOpenGLTilePositions)
+        workerCount = qMax(1, qMin(threadPool->maxThreadCount(), chunkCount));
+
+    QVector<ZTileLayerGroupRenderData *> helperRenderData;
+    if (workerCount > 1) {
+        helperRenderData.fill(nullptr, workerCount - 1);
+        if (renderData != nullptr) {
+            for (ZTileLayerGroupRenderData *&helperData : helperRenderData)
+                helperData = layerGroup->createRenderData();
+            if (helperRenderData.contains(nullptr)) {
+                for (ZTileLayerGroupRenderData *helperData : qAsConst(helperRenderData))
+                    layerGroup->destroyRenderData(helperData);
+                helperRenderData.clear();
+                workerCount = 1;
+            }
+        }
     }
 
-    struct TileRowRange
-    {
-        int firstRow = 0;
-        int endRow = 0;
-        ZTileLayerGroupRenderData *renderData = nullptr;
-        quint64 drawnTiles = 0;
-    };
-    QVector<TileRowRange> rowRanges(batchCount);
-    for (int batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
-        TileRowRange &rowRange = rowRanges[batchIndex];
-        rowRange.firstRow = rowCount * batchIndex / batchCount;
-        rowRange.endRow = rowCount * (batchIndex + 1) / batchCount;
-        rowRange.renderData = renderData;
-        if (batchCount > 1 && renderData != nullptr)
-            rowRange.renderData = layerGroup->createRenderData();
-    }
-    const bool renderDataCreated = std::all_of(rowRanges.cbegin(), rowRanges.cend(),
-            [renderData](const TileRowRange &rowRange) {
-        return renderData == nullptr || rowRange.renderData != nullptr;
-    });
-    if (!renderDataCreated) {
-        for (TileRowRange &rowRange : rowRanges)
-            layerGroup->destroyRenderData(rowRange.renderData);
-        rowRanges = {TileRowRange{0, rowCount, renderData, 0}};
-        batchCount = 1;
-    }
-
+    const int batchCount = workerCount > 1 ? chunkCount : 1;
+    const int rowsPerBatch = workerCount > 1 ? rowsPerOpenGLBatch : rowCount;
     const qreal opacity = painter->opacity();
     std::vector<OpenGLTileBatch> batches;
     batches.reserve(size_t(batchCount));
     for (int batchIndex = 0; batchIndex < batchCount; ++batchIndex)
         batches.emplace_back(openGLRenderer->atlas(), opacity);
+    std::vector<quint64> batchTileCounts(size_t(batchCount), 0);
 
-    if (batchCount == 1) {
-        rowRanges[0].drawnTiles = drawTileRows(batches[0], layerGroup, rect, 0, rowCount,
-                                               opacity, renderData);
-    } else {
+    const auto tileRowBatches = std::make_shared<TileRowBatchQueue>(batchCount);
+    tileRowBatches->setDrawBatch([&](int batchIndex, ZTileLayerGroupRenderData *workerData) {
+        const int firstRow = batchIndex * rowsPerBatch;
+        batchTileCounts[size_t(batchIndex)] = drawTileRows(
+                    batches[size_t(batchIndex)], layerGroup, rect, firstRow,
+                    qMin(rowCount, firstRow + rowsPerBatch), opacity, workerData);
+    });
+    if (workerCount > 1) {
         invisiblePlaceholderTile();
         missingPlaceholderTile();
-        for (int batchIndex = 0; batchIndex < batchCount; ++batchIndex) {
-            TileRowRange &rowRange = rowRanges[batchIndex];
-            OpenGLTileBatch &batch = batches[size_t(batchIndex)];
-            threadPool->start(new TileBandRenderTask([&, layerGroup] {
-                rowRange.drawnTiles = drawTileRows(batch, layerGroup, rect,
-                                                   rowRange.firstRow, rowRange.endRow,
-                                                   opacity, rowRange.renderData);
+        for (ZTileLayerGroupRenderData *helperData : qAsConst(helperRenderData)) {
+            threadPool->start(new TileBandRenderTask([tileRowBatches, helperData] {
+                tileRowBatches->drawRemainingBatches(helperData);
             }));
         }
-        threadPool->waitForDone();
-        for (TileRowRange &rowRange : rowRanges)
-            layerGroup->destroyRenderData(rowRange.renderData);
     }
+    tileRowBatches->drawRemainingBatches(renderData);
+    tileRowBatches->waitForBatches();
+    for (ZTileLayerGroupRenderData *helperData : qAsConst(helperRenderData))
+        layerGroup->destroyRenderData(helperData);
 
     QVector<OpenGLTileBatch *> drawableBatches;
     drawableBatches.reserve(batchCount);
@@ -729,8 +759,10 @@ bool ZLevelRenderer::drawTileLayerGroupWithOpenGL(QPainter *painter, ZTileLayerG
             painter->endNativePainting();
             return false;
         }
+        if (batchIndex > 0)
+            batch.inheritOpacity(batches[size_t(batchIndex - 1)]);
         drawableBatches.append(&batch);
-        drawnTiles += rowRanges[batchIndex].drawnTiles;
+        drawnTiles += batchTileCounts[size_t(batchIndex)];
     }
     openGLRenderer->draw(drawableBatches, deviceTransform,
                          painter->testRenderHint(QPainter::SmoothPixmapTransform));

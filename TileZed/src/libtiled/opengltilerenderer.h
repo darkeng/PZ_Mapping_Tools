@@ -27,6 +27,7 @@ public:
     void drawTile(const QImage &image, const QTransform &transform) override;
 
     bool isDrawable() const { return mDrawable; }
+    void inheritOpacity(const OpenGLTileBatch &previous);
 
 private:
     friend class OpenGLTileRenderer;
@@ -43,8 +44,10 @@ private:
     const OpenGLTileAtlas *mAtlas;
     quint64 mAtlasGeneration;
     quint8 mOpacity;
+    bool mOpacitySet;
     bool mDrawable;
     bool mHasUnresolvedTiles;
+    int mInheritedOpacityCount;
     QVector<Instance> mInstances;
     QVector<const QImage *> mImages;
 };

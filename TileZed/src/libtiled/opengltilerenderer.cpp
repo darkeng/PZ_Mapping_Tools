@@ -334,14 +334,25 @@ OpenGLTileBatch::OpenGLTileBatch(const OpenGLTileAtlas *atlas, qreal opacity)
     : mAtlas(atlas)
     , mAtlasGeneration(atlas->generation())
     , mOpacity(opacityLevel(opacity))
+    , mOpacitySet(false)
     , mDrawable(true)
     , mHasUnresolvedTiles(false)
+    , mInheritedOpacityCount(0)
 {
 }
 
 void OpenGLTileBatch::setOpacity(qreal opacity)
 {
     mOpacity = opacityLevel(opacity);
+    mOpacitySet = true;
+}
+
+void OpenGLTileBatch::inheritOpacity(const OpenGLTileBatch &previous)
+{
+    for (int index = 0; index < mInheritedOpacityCount; ++index)
+        mInstances[index].opacity = previous.mOpacity;
+    if (!mOpacitySet)
+        mOpacity = previous.mOpacity;
 }
 
 void OpenGLTileBatch::drawTile(const QImage &image, const QTransform &transform)
@@ -373,6 +384,8 @@ void OpenGLTileBatch::drawTile(const QImage &image, const QTransform &transform)
         instance.page = unresolvedAtlasPage;
         mHasUnresolvedTiles = true;
     }
+    if (!mOpacitySet)
+        ++mInheritedOpacityCount;
     mInstances.append(instance);
     mImages.append(&image);
 }
