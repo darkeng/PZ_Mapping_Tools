@@ -39,7 +39,9 @@
 #include "ztilelayergroup.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <functional>
 #include <vector>
 
@@ -149,6 +151,38 @@ TileRowCursor firstTileRow(const ZLevelRenderer &renderer, const QRect &rect, in
     row.y = row.start.y();
     return row;
 }
+
+struct TilesetDrawInfo
+{
+    QSize customSize;
+    bool jumboTree = false;
+};
+
+class TilesetDrawInfoCache
+{
+public:
+    const TilesetDrawInfo &find(const Tileset *tileset)
+    {
+        Entry &entry = mEntries[(quintptr(tileset) / alignof(std::max_align_t)) % mEntries.size()];
+        if (entry.tileset != tileset) {
+            const QString &tilesetName = tileset->name();
+            entry.tileset = tileset;
+            entry.info.customSize = CustomTileSize::forTileset(tilesetName);
+            entry.info.jumboTree = !entry.info.customSize.isEmpty()
+                    && !tilesetName.contains(QStringLiteral("JUMBOXL"))
+                    && !tilesetName.contains(QStringLiteral("JUMBOXXL"));
+        }
+        return entry.info;
+    }
+
+private:
+    struct Entry
+    {
+        const Tileset *tileset = nullptr;
+        TilesetDrawInfo info;
+    };
+    std::array<Entry, 32> mEntries;
+};
 
 int tileRowCount(const TileRowCursor &firstRow, const QRect &rect, int tileHeight)
 {
@@ -840,6 +874,7 @@ quint64 ZLevelRenderer::drawTileRows(TileDrawTarget &target, ZTileLayerGroup *la
 
     /*static*/ QVector<const Cell*> cells(40); // or QVarLengthArray
     /*static*/ QVector<qreal> opacities(40); // or QVarLengthArray
+    TilesetDrawInfoCache tilesetDrawInfo;
 
     quint64 drawnTiles = 0;
 
@@ -859,7 +894,7 @@ quint64 ZLevelRenderer::drawTileRows(TileDrawTarget &target, ZTileLayerGroup *la
                         Tile *tile = cell->tile;
                         const bool transparentTile = tile->image().isNull()
                                 && tile->hasResolvedSource();
-                        if (tile->properties().contains(QLatin1String("invisible"))
+                        if (tile->properties().contains(QStringLiteral("invisible"))
                                 || transparentTile) {
                             if (isShowInvisibleTiles() == false)
                                 continue;
@@ -904,8 +939,8 @@ quint64 ZLevelRenderer::drawTileRows(TileDrawTarget &target, ZTileLayerGroup *la
                                                              : img.height();
                         }
 
-                        const QString &tilesetName = cell->tile->tileset()->name();
-                        QSize customSize = CustomTileSize::forTileset(tilesetName);
+                        const TilesetDrawInfo &tilesetInfo = tilesetDrawInfo.find(cell->tile->tileset());
+                        const QSize &customSize = tilesetInfo.customSize;
                         bool bJUMBO = !customSize.isEmpty();
                         if (bJUMBO) {
                             dx -= (customSize.width() - 64) / 2; // tileWidth / 2; // FIXME: Shouldn't Tiled::setZomboidTileOffset() take care of this? Possibly a TileScale=2 issue.
@@ -924,9 +959,7 @@ quint64 ZLevelRenderer::drawTileRows(TileDrawTarget &target, ZTileLayerGroup *la
                             dy += tile->height() / 2;
                         }
 
-                        const bool jumboTree = bJUMBO
-                                && !tilesetName.contains(QStringLiteral("JUMBOXL"))
-                                && !tilesetName.contains(QStringLiteral("JUMBOXXL"));
+                        const bool jumboTree = tilesetInfo.jumboTree;
                         if (jumboTree)
                             drawJumboTreeTile_Trunk(cell->tile, target, x, y, m11, m12, m21, m22);
 
